@@ -125,6 +125,163 @@ async function renderNamespacesManageList() {
   }
 }
 
+let autoUpdateUiInitialized = false;
+let pendingUpdateVersion = null;
+
+function stripReleaseNotes(notes) {
+  if (notes == null) return '';
+  const s = Array.isArray(notes)
+    ? notes.map((b) => (typeof b === 'string' ? b : b?.text || '')).join('\n')
+    : String(notes);
+  return s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function setUpdateReadyBanner(visible, version) {
+  const banner = document.getElementById('update-ready-banner');
+  const text = document.getElementById('update-ready-banner-text');
+  if (!banner || !text) return;
+  if (visible && version) {
+    text.textContent = `Version ${version} is ready. Restart the app to finish installing.`;
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+function setUpdatesDownloadProgress(visible, progress) {
+  const wrap = document.getElementById('settings-update-progress-wrap');
+  const bar = document.getElementById('settings-update-progress-bar');
+  const label = document.getElementById('settings-update-progress-label');
+  if (!wrap || !bar || !label) return;
+  if (!visible) {
+    wrap.style.display = 'none';
+    bar.style.width = '0%';
+    label.textContent = '';
+    return;
+  }
+  wrap.style.display = 'block';
+  const p = typeof progress.percent === 'number' ? Math.round(progress.percent) : 0;
+  bar.style.width = `${Math.min(100, Math.max(0, p))}%`;
+  const transferred = progress.transferred || 0;
+  const total = progress.total || 0;
+  const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  label.textContent = total > 0 ? `${p}% · ${mb(transferred)} / ${mb(total)} MB` : `${p}%`;
+}
+
+function setUpdateRestartControlsEnabled(enabled) {
+  const settingsBtn = document.getElementById('settings-update-restart-btn');
+  const bannerBtn = document.getElementById('update-banner-restart-btn');
+  if (settingsBtn) settingsBtn.disabled = !enabled;
+  if (bannerBtn) bannerBtn.disabled = !enabled;
+}
+
+async function loadUpdatesSettingsPanel() {
+  if (!window.electronAPI?.getAutoUpdateEnabled) return;
+  const enabled = await window.electronAPI.getAutoUpdateEnabled();
+  const devNote = document.getElementById('settings-update-dev-note');
+  if (devNote) devNote.style.display = enabled ? 'none' : 'block';
+  const checkBtn = document.getElementById('settings-check-updates-btn');
+  const restartBtn = document.getElementById('settings-update-restart-btn');
+  if (checkBtn) checkBtn.disabled = !enabled;
+  if (restartBtn) restartBtn.disabled = !enabled || !pendingUpdateVersion;
+  const statusEl = document.getElementById('settings-update-status');
+  if (statusEl && pendingUpdateVersion && enabled) {
+    statusEl.textContent = `Version ${pendingUpdateVersion} is downloaded. Restart to apply.`;
+  }
+}
+
+function setupAutoUpdateUi() {
+  if (!window.electronAPI?.checkForUpdates || autoUpdateUiInitialized) return;
+  autoUpdateUiInitialized = true;
+
+  const statusEl = () => document.getElementById('settings-update-status');
+  const notesEl = () => document.getElementById('settings-update-notes');
+
+  window.electronAPI.onUpdateAvailable((data) => {
+    pendingUpdateVersion = null;
+    setUpdateRestartControlsEnabled(false);
+    const s = statusEl();
+    if (s) s.textContent = `Update available: v${data.version}. Downloading…`;
+    const n = notesEl();
+    if (n) {
+      const plain = stripReleaseNotes(data.releaseNotes);
+      if (plain) {
+        n.style.display = 'block';
+        n.textContent = plain;
+      } else {
+        n.style.display = 'none';
+        n.textContent = '';
+      }
+    }
+  });
+
+  window.electronAPI.onUpdateDownloadProgress((p) => {
+    setUpdatesDownloadProgress(true, p);
+  });
+
+  window.electronAPI.onUpdateDownloaded((data) => {
+    pendingUpdateVersion = data.version;
+    setUpdatesDownloadProgress(false);
+    setUpdateRestartControlsEnabled(true);
+    const s = statusEl();
+    if (s) s.textContent = `Version ${data.version} is ready. Restart to install.`;
+    setUpdateReadyBanner(true, data.version);
+  });
+
+  window.electronAPI.onUpdateNotAvailable(() => {
+    if (!pendingUpdateVersion) {
+      const s = statusEl();
+      if (s) s.textContent = 'You are on the latest version.';
+    }
+    setUpdatesDownloadProgress(false);
+  });
+
+  window.electronAPI.onUpdateError((err) => {
+    const s = statusEl();
+    if (s) s.textContent = typeof err === 'string' ? err : 'Update check failed.';
+    setUpdatesDownloadProgress(false);
+  });
+
+  const checkBtn = document.getElementById('settings-check-updates-btn');
+  if (checkBtn) {
+    checkBtn.addEventListener('click', async () => {
+      const enabled = await window.electronAPI.getAutoUpdateEnabled();
+      if (!enabled) return;
+      const s = statusEl();
+      if (s) s.textContent = 'Checking for updates…';
+      const n = notesEl();
+      if (n) {
+        n.style.display = 'none';
+        n.textContent = '';
+      }
+      setUpdatesDownloadProgress(false);
+      const r = await window.electronAPI.checkForUpdates();
+      if (!r.success && s) s.textContent = r.error || 'Check failed.';
+    });
+  }
+
+  const restartSettings = document.getElementById('settings-update-restart-btn');
+  if (restartSettings) {
+    restartSettings.addEventListener('click', async () => {
+      await window.electronAPI.installUpdate();
+    });
+  }
+
+  const restartBanner = document.getElementById('update-banner-restart-btn');
+  if (restartBanner) {
+    restartBanner.addEventListener('click', async () => {
+      await window.electronAPI.installUpdate();
+    });
+  }
+
+  const dismissBanner = document.getElementById('update-banner-dismiss-btn');
+  if (dismissBanner) {
+    dismissBanner.addEventListener('click', () => {
+      setUpdateReadyBanner(false);
+    });
+  }
+}
+
 // Initialize app
 document.addEventListener('DOMContentLoaded', async () => {
   try {
@@ -387,6 +544,8 @@ function setupEventListeners() {
 
   // Settings page navigation
   setupSettingsNavigation();
+
+  setupAutoUpdateUi();
 
   // Regenerate vector store
   const regenerateVectorStoreBtn = document.getElementById('regenerate-vector-store-btn');
@@ -3069,7 +3228,8 @@ async function showSettingsModal() {
   await loadGeneralSettings();
   await loadServerSettings();
   await loadWebSearchSettings();
-  
+  await loadUpdatesSettingsPanel();
+
   // Clean up previous event handlers
   if (settingsModalOverlayClickHandler) {
     modal.removeEventListener('click', settingsModalOverlayClickHandler);

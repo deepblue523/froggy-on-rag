@@ -79,7 +79,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('mcp-server-log', (_, data) => callback(data));
   },
   
-  // Auto-update
+  // Auto-update (GitHub Releases via electron-builder `build.publish`)
+  getAutoUpdateEnabled: () => ipcRenderer.invoke('get-auto-update-enabled'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),

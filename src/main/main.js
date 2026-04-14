@@ -23,6 +23,7 @@ let mainWindow;
 let mcpServer = null;
 let ragService = null;
 let mcpService = null;
+let updateCheckIntervalId = null;
 
 function getWindowState() {
   try {
@@ -182,6 +183,10 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  mainWindow.webContents.once('did-finish-load', () => {
+    scheduleGitHubUpdateChecks();
+  });
+
   // Save window state on move/resize
   let saveTimeout;
   const debouncedSave = () => {
@@ -205,24 +210,18 @@ function createWindow() {
   }
 }
 
-// Auto-updater configuration
-function setupAutoUpdater() {
-  // Configure auto-updater
-  autoUpdater.autoDownload = false; // Don't auto-download, let user choose
-  autoUpdater.autoInstallOnAppQuit = true; // Install on app quit if update is downloaded
-  
-  // Only check for updates in production (not in dev mode)
-  if (!process.argv.includes('--dev') && app.isPackaged) {
-    // Check for updates on startup
-    autoUpdater.checkForUpdates();
-    
-    // Check for updates every 4 hours
-    setInterval(() => {
-      autoUpdater.checkForUpdates();
-    }, 4 * 60 * 60 * 1000);
-  }
+function isAutoUpdateEnvironment() {
+  return app.isPackaged && !process.argv.includes('--dev');
+}
 
-  // Update available
+/** GitHub Releases feed is taken from `build.publish` in package.json (embedded as app-update.yml when packaged). */
+function registerAutoUpdaterListeners() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+
+  // Private GitHub repos: set GH_TOKEN or GITHUB_TOKEN in the environment (used by electron-updater).
+
   autoUpdater.on('update-available', (info) => {
     console.log('Update available:', info.version);
     if (mainWindow) {
@@ -274,9 +273,22 @@ function setupAutoUpdater() {
   });
 }
 
+function scheduleGitHubUpdateChecks() {
+  if (!isAutoUpdateEnvironment()) return;
+  if (updateCheckIntervalId !== null) return;
+
+  const tick = () => {
+    autoUpdater.checkForUpdates().catch((err) => console.error('Auto-update check failed:', err));
+  };
+  tick();
+  updateCheckIntervalId = setInterval(tick, 4 * 60 * 60 * 1000);
+}
+
 // IPC handlers for update actions
+ipcMain.handle('get-auto-update-enabled', () => isAutoUpdateEnvironment());
+
 ipcMain.handle('check-for-updates', async () => {
-  if (app.isPackaged && !process.argv.includes('--dev')) {
+  if (isAutoUpdateEnvironment()) {
     try {
       const result = await autoUpdater.checkForUpdates();
       return { success: true, result };
@@ -288,7 +300,7 @@ ipcMain.handle('check-for-updates', async () => {
 });
 
 ipcMain.handle('download-update', async () => {
-  if (app.isPackaged && !process.argv.includes('--dev')) {
+  if (isAutoUpdateEnvironment()) {
     try {
       await autoUpdater.downloadUpdate();
       return { success: true };
@@ -300,7 +312,7 @@ ipcMain.handle('download-update', async () => {
 });
 
 ipcMain.handle('install-update', async () => {
-  if (app.isPackaged && !process.argv.includes('--dev')) {
+  if (isAutoUpdateEnvironment()) {
     try {
       autoUpdater.quitAndInstall(false, true);
       return { success: true };
@@ -312,8 +324,7 @@ ipcMain.handle('install-update', async () => {
 });
 
 app.whenReady().then(() => {
-  // Setup auto-updater
-  setupAutoUpdater();
+  registerAutoUpdaterListeners();
 
   // Register IPC handlers with null refs so renderer calls can wait for services
   require('./ipc-handlers')(ipcMain, null, null);
