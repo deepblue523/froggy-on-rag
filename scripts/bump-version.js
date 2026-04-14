@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Version bump script for incrementing version numbers
+ * Bump package.json and package-lock.json (same as `npm version`) without git commit/tag.
+ *
  * Usage:
  *   node scripts/bump-version.js patch   (1.0.0 -> 1.0.1)
  *   node scripts/bump-version.js minor   (1.0.0 -> 1.1.0)
@@ -9,39 +10,30 @@
  *   node scripts/bump-version.js         (defaults to patch)
  */
 
-const fs = require('fs');
+const { execFileSync, spawnSync } = require('child_process');
 const path = require('path');
 
-const packageJsonPath = path.join(__dirname, '..', 'package.json');
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+const arg = process.argv[2];
+const bumpType = ['major', 'minor', 'patch'].includes(arg) ? arg : arg ? null : 'patch';
 
-const currentVersion = packageJson.version;
-const versionParts = currentVersion.split('.').map(Number);
-
-const bumpType = process.argv[2] || 'patch';
-
-let newVersion;
-switch (bumpType) {
-  case 'major':
-    newVersion = `${versionParts[0] + 1}.0.0`;
-    break;
-  case 'minor':
-    newVersion = `${versionParts[0]}.${versionParts[1] + 1}.0`;
-    break;
-  case 'patch':
-  default:
-    newVersion = `${versionParts[0]}.${versionParts[1]}.${versionParts[2] + 1}`;
-    break;
+if (arg && !bumpType) {
+  console.error(`Invalid bump "${arg}". Use patch, minor, or major.`);
+  process.exit(1);
 }
 
-packageJson.version = newVersion;
-fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
+const projectRoot = path.join(__dirname, '..');
+const npmArgs = ['version', bumpType, '--no-git-tag-version'];
 
-console.log(`Version bumped: ${currentVersion} -> ${newVersion}`);
-console.log(`\nNext steps:`);
-console.log(`  1. git add package.json`);
-console.log(`  2. git commit -m "Bump version to ${newVersion}"`);
-console.log(`  3. git tag v${newVersion}`);
-console.log(`  4. git push origin main --tags`);
-console.log(`  5. npm run build:publish`);
-
+if (process.platform === 'win32') {
+  const r = spawnSync('cmd.exe', ['/d', '/c', 'npm', ...npmArgs], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+  });
+  if (r.status !== 0) process.exit(r.status ?? 1);
+} else {
+  try {
+    execFileSync('npm', npmArgs, { cwd: projectRoot, stdio: 'inherit' });
+  } catch (e) {
+    process.exit(typeof e.status === 'number' ? e.status : 1);
+  }
+}
