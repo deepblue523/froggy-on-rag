@@ -1,4 +1,4 @@
-const { ipcMain } = require('electron');
+const { ipcMain, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -35,7 +35,8 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService) {
       servicesReadyPromise = null;
     }
   } else {
-    // Services not ready yet - handlers will wait
+    ragServiceRef = null;
+    mcpServiceRef = null;
     servicesReady = false;
   }
   
@@ -144,9 +145,9 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService) {
   });
 
   // Search handlers
-  ipcMain.handle('search', async (_, query, limit = 10, algorithm = 'hybrid') => {
+  ipcMain.handle('search', async (_, query, limit = 10, algorithm = 'hybrid', options = {}) => {
     await waitForServices();
-    return await ragServiceRef.search(query, limit, algorithm);
+    return await ragServiceRef.search(query, limit, algorithm, options);
   });
 
   // MCP Server handlers
@@ -179,6 +180,13 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService) {
   ipcMain.handle('save-settings', async (_, settings) => {
     await waitForServices();
     return ragServiceRef.saveSettings(settings);
+  });
+
+  ipcMain.handle('toggle-devtools', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      win.webContents.toggleDevTools();
+    }
   });
 
   // Clipboard handlers

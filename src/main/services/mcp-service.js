@@ -99,7 +99,7 @@ class MCPService extends EventEmitter {
           {
             id: 'search',
             name: 'search',
-            description: 'Search the vector store for similar content',
+            description: 'Search the vector store for similar content, optionally augmented with live web search results. JSON body includes results, warnings[], and errors[] (e.g. web search timeout still returns vector results with a warning).',
             inputSchema: {
               type: 'object',
               properties: {
@@ -110,6 +110,11 @@ class MCPService extends EventEmitter {
                   description: 'Search algorithm: hybrid, bm25, tfidf, or vector',
                   enum: ['hybrid', 'bm25', 'tfidf', 'vector'],
                   default: 'hybrid'
+                },
+                webSearch: {
+                  type: 'boolean',
+                  description: 'When true, also perform a Google Custom Search and merge web results with vector store results',
+                  default: false
                 }
               },
               required: ['query']
@@ -194,14 +199,15 @@ class MCPService extends EventEmitter {
       try {
         switch (toolId) {
           case 'search': {
-            const { query, limit = 10, algorithm = 'hybrid' } = args;
+            const { query, limit = 10, algorithm = 'hybrid', webSearch = false } = args;
             if (!query) {
               return res.status(400).json({ error: 'query is required' });
             }
-            this.log('info', 'Search request', { query, limit, algorithm });
-            const results = await this.ragService.search(query, limit, algorithm);
+            this.log('info', 'Search request', { query, limit, algorithm, webSearch });
+            const payload = await this.ragService.search(query, limit, algorithm, { webSearch });
+            const rows = payload.results || [];
             return res.json({
-              results: results.map(r => ({
+              results: rows.map(r => ({
                 chunkId: r.chunkId,
                 documentId: r.documentId,
                 content: r.content,
@@ -209,7 +215,9 @@ class MCPService extends EventEmitter {
                 similarity: r.similarity,
                 algorithm: r.algorithm,
                 metadata: r.metadata
-              }))
+              })),
+              warnings: payload.warnings || [],
+              errors: payload.errors || []
             });
           }
 
@@ -276,24 +284,27 @@ class MCPService extends EventEmitter {
     // Search tool
     this.restServer.post('/tools/search', async (req, res) => {
       try {
-        const { query, limit = 10, algorithm = 'hybrid' } = req.body;
+        const { query, limit = 10, algorithm = 'hybrid', webSearch = false } = req.body;
         if (!query) {
           return res.status(400).json({ error: 'Query is required' });
         }
 
-        this.log('info', 'Search request', { query, limit, algorithm });
-        const results = await this.ragService.search(query, limit, algorithm);
-        
+        this.log('info', 'Search request', { query, limit, algorithm, webSearch });
+        const payload = await this.ragService.search(query, limit, algorithm, { webSearch });
+        const rows = payload.results || [];
+
         res.json({
-          results: results.map(r => ({
+          results: rows.map(r => ({
             chunkId: r.chunkId,
             documentId: r.documentId,
             content: r.content,
             score: r.score,
-            similarity: r.similarity, // Keep for backward compatibility
+            similarity: r.similarity,
             algorithm: r.algorithm,
             metadata: r.metadata
-          }))
+          })),
+          warnings: payload.warnings || [],
+          errors: payload.errors || []
         });
       } catch (error) {
         this.log('error', 'Search error', { error: error.message });
@@ -615,7 +626,7 @@ class MCPService extends EventEmitter {
     return [
       {
         name: 'search',
-        description: 'Search the vector store for similar content',
+        description: 'Search the vector store for similar content, optionally augmented with live web search results. Response includes results, warnings[], and errors[] (e.g. web search timeout).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -626,6 +637,11 @@ class MCPService extends EventEmitter {
               description: 'Search algorithm: hybrid, bm25, tfidf, or vector',
               enum: ['hybrid', 'bm25', 'tfidf', 'vector'],
               default: 'hybrid'
+            },
+            webSearch: {
+              type: 'boolean',
+              description: 'When true, also perform a Google Custom Search and merge web results with vector store results',
+              default: false
             }
           },
           required: ['query']
@@ -707,25 +723,35 @@ class MCPService extends EventEmitter {
               error: { code: -32602, message: 'Invalid params', data: 'query is required' }
             };
           }
-          const searchResults = await this.ragService.search(
+          const searchPayload = await this.ragService.search(
             toolParams.query, 
             toolParams.limit || 10,
-            toolParams.algorithm || 'hybrid'
+            toolParams.algorithm || 'hybrid',
+            { webSearch: toolParams.webSearch || false }
           );
+          const searchResults = searchPayload.results || [];
           return {
             result: {
-              content: searchResults.map(r => ({
+              content: [{
                 type: 'text',
-                text: JSON.stringify({
-                  chunkId: r.chunkId,
-                  documentId: r.documentId,
-                  content: r.content,
-                  score: r.score,
-                  similarity: r.similarity,
-                  algorithm: r.algorithm,
-                  metadata: r.metadata
-                }, null, 2)
-              }))
+                text: JSON.stringify(
+                  {
+                    results: searchResults.map(r => ({
+                      chunkId: r.chunkId,
+                      documentId: r.documentId,
+                      content: r.content,
+                      score: r.score,
+                      similarity: r.similarity,
+                      algorithm: r.algorithm,
+                      metadata: r.metadata
+                    })),
+                    warnings: searchPayload.warnings || [],
+                    errors: searchPayload.errors || []
+                  },
+                  null,
+                  2
+                )
+              }]
             }
           };
 

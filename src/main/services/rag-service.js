@@ -7,6 +7,16 @@ const chokidar = require('chokidar');
 const { VectorStore } = require('./vector-store');
 const { DocumentProcessor } = require('./document-processor');
 const { SearchService } = require('./search-service');
+const { WebSearchService } = require('./web-search-service');
+const { getAppSettingsPath } = require('../../paths');
+const {
+  splitSettingsForPersist,
+  mergeSettingsLayers,
+  readJsonObject,
+  patchAppSettings,
+  writeAppAndNamespace,
+  migrateLegacySettingsJson
+} = require('../../settings-files');
 
 /** Compare two paths for equality (case-insensitive on Windows). */
 function pathsEqual(a, b) {
@@ -21,10 +31,14 @@ function pathsEqual(a, b) {
 class RAGService extends EventEmitter {
   constructor(dataDir) {
     super();
+    this._disposed = false;
     this.dataDir = dataDir;
-    this.settingsPath = path.join(dataDir, 'settings.json');
+    this.appSettingsPath = getAppSettingsPath();
+    this.namespacePath = path.join(dataDir, 'namespace.json');
+    this.legacySettingsPath = path.join(dataDir, 'settings.json');
     this.vectorStore = new VectorStore(dataDir);
     this.searchService = new SearchService(this.vectorStore);
+    this.webSearchService = new WebSearchService();
     this.searchProfilingEnabled = process.env.SEARCH_PROFILE === '1';
     
     // Initialize embedding model (lazy load)
@@ -32,6 +46,7 @@ class RAGService extends EventEmitter {
     
     // Settings (load before creating document processor)
     this.settings = this.loadSettings();
+    this.webSearchService.configure(this.settings);
     
     // Load embedding model and create document processor
     this.loadEmbeddingModel();
@@ -77,17 +92,11 @@ class RAGService extends EventEmitter {
     }
   }
 
-  loadSettings() {
-    try {
-      if (fs.existsSync(this.settingsPath)) {
-        return JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8'));
-      }
-    } catch (error) {
-      console.error('Error loading settings:', error);
-    }
+  _defaultSettings() {
     return {
       files: [],
       directories: [],
+      mruSearches: [],
       splitterPosition: 250,
       chunkSize: 1000,
       chunkOverlap: 200,
@@ -98,13 +107,34 @@ class RAGService extends EventEmitter {
       retrievalReturnFullDocs: false,
       retrievalMaxContextTokens: 0,
       searchProfiling: false,
-      minimizeToTray: false
+      minimizeToTray: false,
+      webSearchEnabled: false,
+      webSearchApiKey: '',
+      webSearchCx: '',
+      webSearchMaxResults: 5,
+      webSearchSafeSearch: 'off',
+      webSearchTimeoutMs: 10000,
+      webSearchFetchPages: true,
+      webSearchFetchMaxBytes: 1048576,
+      webSearchPageFetchTimeoutMs: 8000
     };
+  }
+
+  loadSettings() {
+    migrateLegacySettingsJson(
+      this.legacySettingsPath,
+      this.appSettingsPath,
+      this.namespacePath
+    );
+    const appLayer = readJsonObject(this.appSettingsPath);
+    const namespaceLayer = readJsonObject(this.namespacePath);
+    return mergeSettingsLayers(this._defaultSettings(), appLayer, namespaceLayer);
   }
 
   _saveSettingsToDisk() {
     try {
-      fs.writeFileSync(this.settingsPath, JSON.stringify(this.settings, null, 2));
+      const { app, namespace } = splitSettingsForPersist(this.settings);
+      writeAppAndNamespace(this.appSettingsPath, this.namespacePath, app, namespace);
     } catch (error) {
       console.error('Error saving settings:', error);
     }
@@ -127,9 +157,40 @@ class RAGService extends EventEmitter {
       if (newSettings.embeddingModel && newSettings.embeddingModel !== this.settings.embeddingModel) {
         this.loadEmbeddingModel();
       }
+
+      // Reconfigure web search service when relevant settings change
+      this.webSearchService.configure(this.settings);
     }
     
     this._saveSettingsToDisk();
+
+    // Merge-write app file again for web search so keys are never dropped by a
+    // race with window-state saves or partial IPC payloads.
+    const ws = this.settings;
+    patchAppSettings(this.appSettingsPath, {
+      webSearchEnabled: ws.webSearchEnabled || false,
+      webSearchApiKey: ws.webSearchApiKey || '',
+      webSearchCx: ws.webSearchCx || '',
+      webSearchMaxResults: ws.webSearchMaxResults || 5,
+      webSearchSafeSearch: ws.webSearchSafeSearch || 'off',
+      webSearchTimeoutMs: (() => {
+        const n = Number(ws.webSearchTimeoutMs);
+        if (!Number.isFinite(n) || n < 0) return 10000;
+        return Math.min(Math.floor(n), 600000);
+      })(),
+      webSearchFetchPages: ws.webSearchFetchPages !== false,
+      webSearchFetchMaxBytes: (() => {
+        const n = Number(ws.webSearchFetchMaxBytes);
+        if (!Number.isFinite(n) || n < 4096) return 1048576;
+        return Math.min(Math.floor(n), 10 * 1024 * 1024);
+      })(),
+      webSearchPageFetchTimeoutMs: (() => {
+        const n = Number(ws.webSearchPageFetchTimeoutMs);
+        if (!Number.isFinite(n) || n < 0) return 8000;
+        return Math.min(Math.floor(n), 120000);
+      })()
+    });
+
     return this.settings;
   }
 
@@ -231,6 +292,7 @@ class RAGService extends EventEmitter {
   }
 
   addToQueue(filePath, type) {
+    if (this._disposed) return;
     const queueItem = {
       id: uuidv4(),
       filePath,
@@ -247,7 +309,7 @@ class RAGService extends EventEmitter {
     if (this.processing) return;
     this.processing = true;
 
-    while (true) {
+    while (!this._disposed) {
       // Wait if no items in queue
       if (this.ingestionQueue.length === 0) {
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -271,9 +333,13 @@ class RAGService extends EventEmitter {
       // Small delay to allow event loop to process other events
       await new Promise(resolve => setImmediate(resolve));
     }
+    this.processing = false;
   }
 
   async processQueueItem(item) {
+    if (this._disposed) {
+      return;
+    }
     try {
       item.status = 'processing';
       this.emit('ingestion-update', { type: 'processing', item });
@@ -769,7 +835,10 @@ class RAGService extends EventEmitter {
     return this.vectorStore.getStats();
   }
 
-  async search(query, limit = 10, algorithm = 'hybrid') {
+  async search(query, limit = 10, algorithm = 'hybrid', options = {}) {
+    const webSearch = options.webSearch || false;
+    const searchWarnings = [];
+    const searchErrors = [];
     const profiler = this.createSearchProfiler(`Search:${algorithm}`);
     profiler?.mark('start');
     
@@ -835,6 +904,31 @@ class RAGService extends EventEmitter {
         allChunks = this.vectorStore.getAllChunksWithoutEmbeddings();
       }
     }
+
+    // --- Web search: fetch and chunk in parallel with vector store search ---
+    let webChunksPromise = null;
+    if (webSearch && this.webSearchService.isAvailable()) {
+      const chunkSize = this.settings.chunkSize || 1000;
+      const chunkOverlap = this.settings.chunkOverlap || 200;
+      const timeoutMs = this.webSearchService.timeoutMs || 0;
+      webChunksPromise = this.webSearchService.searchAndChunk(query, chunkSize, chunkOverlap)
+        .catch(err => {
+          console.error('Web search error:', err);
+          const msg = err && err.message ? String(err.message) : String(err);
+          const aborted =
+            (err && err.name === 'AbortError') ||
+            /aborted|AbortError|The user aborted a request/i.test(msg);
+          if (aborted && timeoutMs > 0) {
+            searchWarnings.push(
+              `Web search timed out after ${timeoutMs} ms; results are from the vector store only.`
+            );
+          } else {
+            searchWarnings.push(`Web search was skipped: ${msg}`);
+          }
+          return [];
+        });
+      profiler?.mark('web-search-started');
+    }
     
     // Use search service to perform search with retrieval and metadata settings
     // Pass vectorStore for streaming when dataset is large
@@ -860,13 +954,90 @@ class RAGService extends EventEmitter {
       useStreaming ? this.vectorStore : null
     );
     profiler?.mark('search-service');
+
+    // --- Merge web search results into the vector store results ---
+    let webResults = [];
+    if (webChunksPromise) {
+      const webChunks = await webChunksPromise;
+      profiler?.mark(`web-chunks:${webChunks.length}`);
+
+      if (webChunks.length > 0) {
+        // Score web chunks using text-based search (BM25) against the query
+        // so they get comparable scores to vector store results.
+        const webBM25 = this.searchService.searchBM25(query, webChunks, webChunks.length);
+
+        // Also score via vector similarity if we have an embedding
+        let webVector = [];
+        if (queryEmbedding && this.embeddingModel) {
+          // Generate embeddings for web chunks on the fly
+          for (const chunk of webChunks) {
+            try {
+              const output = await this.embeddingModel(chunk.content);
+              chunk.embedding = Array.from(output.data);
+              const normalizeEmbeddings = this.settings.normalizeEmbeddings !== false;
+              if (normalizeEmbeddings) {
+                const norm = Math.sqrt(chunk.embedding.reduce((s, v) => s + v * v, 0));
+                if (norm > 0) chunk.embedding = chunk.embedding.map(v => v / norm);
+              }
+            } catch (_) {
+              chunk.embedding = this.documentProcessor.simpleEmbedding(chunk.content);
+            }
+          }
+          webVector = this.searchService.searchVector(queryEmbedding, webChunks, webChunks.length);
+        }
+
+        // Hybrid fusion of BM25 + vector for web chunks (same approach as hybrid search)
+        const bm25Map = new Map(webBM25.map(r => [r.id, r.score]));
+        const vectorMap = new Map(webVector.map(r => [r.id, r.score]));
+
+        const normalize = (map) => {
+          if (map.size === 0) return new Map();
+          const vals = Array.from(map.values());
+          const max = Math.max(...vals);
+          const min = Math.min(...vals);
+          const range = max - min || 1;
+          const out = new Map();
+          for (const [k, v] of map) out.set(k, (v - min) / range);
+          return out;
+        };
+
+        const normBM25 = normalize(bm25Map);
+        const normVector = normalize(vectorMap);
+        const allIds = new Set([...bm25Map.keys(), ...vectorMap.keys()]);
+        const chunkMap = new Map(webChunks.map(c => [c.id, c]));
+
+        for (const id of allIds) {
+          const bm25Score = normBM25.get(id) || 0;
+          const vecScore = normVector.get(id) || 0;
+          const combined = (bm25Score * 0.5) + (vecScore * 0.5);
+          const chunk = chunkMap.get(id);
+          if (chunk && combined > 0) {
+            webResults.push({
+              ...chunk,
+              score: combined,
+              algorithm: 'Web'
+            });
+          }
+        }
+
+        webResults.sort((a, b) => b.score - a.score);
+        profiler?.mark('web-scored');
+      }
+    }
+
+    // Merge vector store results and web results using reciprocal rank fusion (RRF)
+    // so both sources get fair representation in the final list.
+    let mergedResults = results;
+    if (webResults.length > 0) {
+      mergedResults = this._mergeResultsRRF(results, webResults, topK);
+      profiler?.mark('merged');
+    }
     
     // Handle grouped results
-    if (groupByDoc && results.length > 0 && results[0].chunks) {
-      const finalResults = results.map(result => {
+    if (groupByDoc && mergedResults.length > 0 && mergedResults[0].chunks) {
+      const finalResults = mergedResults.map(result => {
         const doc = docMap.get(result.document_id);
         if (returnFullDocs && doc) {
-          // Return full document with all chunks
           const docChunks = this.vectorStore.getDocumentChunks(result.document_id);
           return {
             documentId: result.document_id,
@@ -887,7 +1058,6 @@ class RAGService extends EventEmitter {
             }
           };
         } else {
-          // Return grouped chunks
           return {
             documentId: result.document_id,
             chunks: result.chunks.map(chunk => ({
@@ -906,14 +1076,15 @@ class RAGService extends EventEmitter {
         }
       });
       profiler?.end('completed');
-      return finalResults;
+      this._logSearchConsoleMessages(searchWarnings, searchErrors);
+      return { results: finalResults, warnings: searchWarnings, errors: searchErrors };
     }
     
     // Handle regular chunk results
-    const finalResults = results.map(result => {
-      const doc = docMap.get(result.document_id);
-      if (returnFullDocs && doc) {
-        // Return full document content
+    const finalResults = mergedResults.map(result => {
+      const isWeb = result.metadata?.source === 'web';
+      const doc = isWeb ? null : docMap.get(result.document_id);
+      if (!isWeb && returnFullDocs && doc) {
         const docChunks = this.vectorStore.getDocumentChunks(result.document_id);
         return {
           chunkId: result.id,
@@ -931,7 +1102,6 @@ class RAGService extends EventEmitter {
           }
         };
       } else {
-        // Return chunk result
         return {
           chunkId: result.id,
           documentId: result.document_id,
@@ -941,15 +1111,54 @@ class RAGService extends EventEmitter {
           algorithm: result.algorithm,
           metadata: {
             ...result.metadata,
-            fileName: doc ? doc.file_name : 'Unknown',
-            filePath: doc ? doc.file_path : 'Unknown'
+            fileName: isWeb ? (result.metadata?.webTitle || result.metadata?.displayLink || 'Web') : (doc ? doc.file_name : 'Unknown'),
+            filePath: isWeb ? (result.metadata?.url || '') : (doc ? doc.file_path : 'Unknown')
           }
         };
       }
     });
     
     profiler?.end('completed');
-    return finalResults;
+    this._logSearchConsoleMessages(searchWarnings, searchErrors);
+    return { results: finalResults, warnings: searchWarnings, errors: searchErrors };
+  }
+
+  _logSearchConsoleMessages(warnings, errors) {
+    if (warnings && warnings.length) {
+      for (const w of warnings) console.warn('[search]', w);
+    }
+    if (errors && errors.length) {
+      for (const e of errors) console.error('[search]', e);
+    }
+  }
+
+  /**
+   * Reciprocal Rank Fusion (RRF) to merge two ranked result lists.
+   * RRF score = sum(1 / (k + rank)) across lists where the result appears.
+   */
+  _mergeResultsRRF(listA, listB, limit, k = 60) {
+    const scores = new Map();
+    const items = new Map();
+
+    const addList = (list) => {
+      list.forEach((item, idx) => {
+        const rank = idx + 1;
+        const prev = scores.get(item.id) || 0;
+        scores.set(item.id, prev + 1 / (k + rank));
+        if (!items.has(item.id)) items.set(item.id, item);
+      });
+    };
+
+    addList(listA);
+    addList(listB);
+
+    return Array.from(scores.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([id, rrfScore]) => {
+        const item = items.get(id);
+        return { ...item, score: rrfScore, rrfScore };
+      });
   }
 
   async syncWatchedFilesWithVectorStore() {
@@ -1134,6 +1343,35 @@ class RAGService extends EventEmitter {
         console.log(`[SearchProfiler] ${label} - ${finalStep}: ${(now - start).toFixed(2)}ms total`);
       }
     };
+  }
+
+  /**
+   * Stop ingestion, close watchers and DB. Safe to call multiple times.
+   */
+  async dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.ingestionQueue.length = 0;
+
+    const deadline = Date.now() + 30000;
+    while (this.activeProcessingCount > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    for (const fp of [...this.fileWatchers.keys()]) {
+      this.unwatchFile(fp);
+    }
+    for (const dp of [...this.directoryWatchers.keys()]) {
+      this.unwatchDirectory(dp);
+    }
+
+    this.removeAllListeners();
+
+    try {
+      this.vectorStore.close();
+    } catch (error) {
+      console.error('Error closing vector store:', error);
+    }
   }
 }
 

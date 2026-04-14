@@ -3,6 +3,17 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   // Data directory
   getDataDir: () => ipcRenderer.invoke('get-data-dir'),
+
+  // Namespaces (per data subdirectory under ~/froggy-rag-mcp/data)
+  listNamespaces: () => ipcRenderer.invoke('namespace-list'),
+  getActiveNamespace: () => ipcRenderer.invoke('namespace-get-active'),
+  setActiveNamespace: (name) => ipcRenderer.invoke('namespace-set', name),
+  createNamespace: (name) => ipcRenderer.invoke('namespace-create', name),
+  renameNamespace: (from, to) => ipcRenderer.invoke('namespace-rename', from, to),
+  deleteNamespace: (name) => ipcRenderer.invoke('namespace-delete', name),
+  onNamespaceChanged: (callback) => {
+    ipcRenderer.on('namespace-changed', (_, payload) => callback(payload));
+  },
   
   // App version
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
@@ -30,7 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   regenerateVectorStore: () => ipcRenderer.invoke('regenerate-vector-store'),
   
   // Search
-  search: (query, limit) => ipcRenderer.invoke('search', query, limit),
+  search: (query, limit, algorithm, options) => ipcRenderer.invoke('search', query, limit, algorithm, options),
   
   // MCP Server
   startMCPServer: (port) => ipcRenderer.invoke('start-mcp-server', port),
@@ -53,6 +64,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Path checking
   isDirectory: (filePath) => ipcRenderer.invoke('is-directory', filePath),
+
+  // Developer tools (main window)
+  toggleDevTools: () => ipcRenderer.invoke('toggle-devtools'),
 
   // Open path in system file manager
   openPathInExplorer: (pathToOpen) => ipcRenderer.invoke('open-path-in-explorer', pathToOpen),

@@ -1,17 +1,22 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
-const os = require('os');
 const fs = require('fs');
 
 // Get version from package.json
 const packageJson = require('../../package.json');
 const appVersion = packageJson.version;
+const paths = require('../paths');
+const { readJsonObject, patchAppSettings } = require('../settings-files');
 
-// Ensure data directory exists
-const dataDir = path.join(os.homedir(), 'froggy-rag-mcp', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+paths.ensureUserDataLayout();
+let currentNamespaceName = paths.resolveInitialNamespaceName();
+let dataDir = paths.getDataDirForNamespace(currentNamespaceName);
+{
+  const appLayer = readJsonObject(paths.getAppSettingsPath());
+  if (appLayer.activeNamespace !== currentNamespaceName) {
+    patchAppSettings(paths.getAppSettingsPath(), { activeNamespace: currentNamespaceName });
+  }
 }
 
 let mainWindow;
@@ -19,14 +24,11 @@ let mcpServer = null;
 let ragService = null;
 let mcpService = null;
 
-// Window state persistence
-const windowStateFile = path.join(dataDir, 'window-state.json');
-
 function getWindowState() {
   try {
-    if (fs.existsSync(windowStateFile)) {
-      const data = fs.readFileSync(windowStateFile, 'utf8');
-      return JSON.parse(data);
+    const ws = readJsonObject(paths.getAppSettingsPath()).windowState;
+    if (ws && typeof ws === 'object') {
+      return ws;
     }
   } catch (error) {
     console.error('Error reading window state:', error);
@@ -36,7 +38,7 @@ function getWindowState() {
 
 function saveWindowState() {
   if (!mainWindow) return;
-  
+
   try {
     const bounds = mainWindow.getBounds();
     const state = {
@@ -45,7 +47,14 @@ function saveWindowState() {
       x: bounds.x,
       y: bounds.y
     };
-    fs.writeFileSync(windowStateFile, JSON.stringify(state, null, 2), 'utf8');
+    const appPath = paths.getAppSettingsPath();
+    const appLayer = readJsonObject(appPath);
+    appLayer.windowState = state;
+    fs.mkdirSync(path.dirname(appPath), { recursive: true });
+    fs.writeFileSync(appPath, JSON.stringify(appLayer, null, 2), 'utf-8');
+    if (ragService && ragService.settings) {
+      ragService.settings.windowState = state;
+    }
   } catch (error) {
     console.error('Error saving window state:', error);
   }
@@ -82,27 +91,70 @@ function ensureWindowOnScreen(bounds) {
   return { x, y, width, height };
 }
 
-// Initialize services early
-async function initializeServices() {
-  if (!ragService) {
+function attachServices() {
+  const { RAGService } = require('./services/rag-service');
+  const { MCPService } = require('./services/mcp-service');
+  ragService = new RAGService(dataDir);
+  mcpService = new MCPService(ragService);
+  require('./ipc-handlers')(ipcMain, ragService, mcpService);
+}
+
+async function destroyServices() {
+  require('./ipc-handlers')(ipcMain, null, null);
+  if (mcpService) {
     try {
-      const { RAGService } = require('./services/rag-service');
-      const { MCPService } = require('./services/mcp-service');
-      
-      ragService = new RAGService(dataDir);
-      mcpService = new MCPService(ragService);
-      
-      // Expose services to renderer via IPC
-      require('./ipc-handlers')(ipcMain, ragService, mcpService);
+      await mcpService.stop();
     } catch (error) {
-      console.error('Error initializing services:', error);
-      // If better-sqlite3 fails, we'll handle it gracefully
-      if (error.message && error.message.includes('better_sqlite3')) {
-        console.error('Please run: npm rebuild better-sqlite3');
-      }
-      throw error;
+      console.error('Error stopping MCP server:', error);
     }
   }
+  if (ragService) {
+    await ragService.dispose();
+  }
+  ragService = null;
+  mcpService = null;
+}
+
+// Initialize services early
+async function initializeServices() {
+  if (ragService) {
+    return;
+  }
+  try {
+    attachServices();
+  } catch (error) {
+    console.error('Error initializing services:', error);
+    if (error.message && error.message.includes('better_sqlite3')) {
+      console.error('Please run: npm rebuild better-sqlite3');
+    }
+    throw error;
+  }
+}
+
+async function switchNamespace(name) {
+  if (!paths.isValidNamespaceName(name)) {
+    throw new Error('Invalid namespace name');
+  }
+  const targetDir = paths.getDataDirForNamespace(name);
+  if (!fs.existsSync(targetDir)) {
+    throw new Error('Namespace does not exist');
+  }
+  if (name === currentNamespaceName) {
+    return { namespace: name, dataDir: targetDir };
+  }
+
+  await destroyServices();
+
+  currentNamespaceName = name;
+  dataDir = targetDir;
+  patchAppSettings(paths.getAppSettingsPath(), { activeNamespace: name });
+
+  attachServices();
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('namespace-changed', { namespace: name });
+  }
+  return { namespace: name, dataDir };
 }
 
 function createWindow() {
@@ -292,6 +344,88 @@ app.on('window-all-closed', () => {
 // IPC handlers
 ipcMain.handle('get-data-dir', () => dataDir);
 ipcMain.handle('get-app-version', () => appVersion);
+
+ipcMain.handle('namespace-list', () => paths.listNamespaceDirNames());
+ipcMain.handle('namespace-get-active', () => currentNamespaceName);
+ipcMain.handle('namespace-set', async (_, name) => {
+  try {
+    return { ok: true, ...(await switchNamespace(name)) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle('namespace-create', (_, name) => {
+  if (!paths.isValidNamespaceName(name)) {
+    return { ok: false, error: 'Invalid name (use letters, numbers, - and _)' };
+  }
+  if (paths.listNamespaceDirNames().includes(name)) {
+    return { ok: false, error: 'A namespace with that name already exists' };
+  }
+  try {
+    fs.mkdirSync(paths.getDataDirForNamespace(name), { recursive: true });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle('namespace-rename', async (_, from, to) => {
+  if (!paths.isValidNamespaceName(from) || !paths.isValidNamespaceName(to)) {
+    return { ok: false, error: 'Invalid name' };
+  }
+  const root = paths.getDataRoot();
+  const oldPath = path.join(root, from);
+  const newPath = path.join(root, to);
+  if (!fs.existsSync(oldPath)) {
+    return { ok: false, error: 'Source namespace not found' };
+  }
+  if (fs.existsSync(newPath)) {
+    return { ok: false, error: 'Target name already exists' };
+  }
+  try {
+    if (from === currentNamespaceName) {
+      await destroyServices();
+      fs.renameSync(oldPath, newPath);
+      currentNamespaceName = to;
+      dataDir = newPath;
+      patchAppSettings(paths.getAppSettingsPath(), { activeNamespace: to });
+      attachServices();
+    } else {
+      fs.renameSync(oldPath, newPath);
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('namespace-changed', { namespace: currentNamespaceName });
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle('namespace-delete', async (_, name) => {
+  if (!paths.isValidNamespaceName(name)) {
+    return { ok: false, error: 'Invalid name' };
+  }
+  const all = paths.listNamespaceDirNames();
+  if (all.length <= 1) {
+    return { ok: false, error: 'Cannot delete the last namespace' };
+  }
+  const dirPath = path.join(paths.getDataRoot(), name);
+  if (!fs.existsSync(dirPath)) {
+    return { ok: false, error: 'Namespace not found' };
+  }
+  try {
+    if (name === currentNamespaceName) {
+      const fallback = all.find((n) => n !== name) || 'general';
+      await switchNamespace(fallback);
+    }
+    fs.rmSync(dirPath, { recursive: true, force: true });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('namespace-changed', { namespace: currentNamespaceName });
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
 
 // Fallback for app-ready event (services should already be initialized)
 ipcMain.on('app-ready', async () => {

@@ -11,6 +11,119 @@ let expandedDirectories = new Set(); // Track which directories are expanded
 let searchCancelled = false; // Track if search was cancelled
 let searchTimerInterval = null; // Timer interval for updating search time
 let searchStartTime = null; // Start time of current search
+let namespaceSelectProgrammatic = false;
+
+async function populateNamespaceSelect() {
+  const sel = document.getElementById('namespace-select');
+  if (!sel || !window.electronAPI.listNamespaces) return;
+  const list = await window.electronAPI.listNamespaces();
+  const active = await window.electronAPI.getActiveNamespace();
+  namespaceSelectProgrammatic = true;
+  sel.innerHTML = '';
+  for (const n of list) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    opt.textContent = n;
+    sel.appendChild(opt);
+  }
+  if (list.includes(active)) {
+    sel.value = active;
+  } else if (list.length > 0) {
+    sel.value = list[0];
+  }
+  namespaceSelectProgrammatic = false;
+}
+
+async function reloadNamespaceContext() {
+  await populateNamespaceSelect();
+  await loadSettings();
+  const tp = document.getElementById('treePanel');
+  if (tp) {
+    tp.style.width = `${splitterPosition}px`;
+  }
+  await refreshFiles();
+  await refreshDirectories();
+  await refreshVectorStore();
+  await refreshServerStatus();
+  await loadServerSettings();
+  await loadMetadataFilteringSettings();
+  await checkAndAutoStartServer();
+  const reloadedSettings = await window.electronAPI.getSettings();
+  initWebSearchCheckbox(reloadedSettings);
+}
+
+function openNamespacesModal() {
+  const overlay = document.getElementById('namespaces-modal-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  renderNamespacesManageList();
+}
+
+function closeNamespacesModal() {
+  const overlay = document.getElementById('namespaces-modal-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+async function renderNamespacesManageList() {
+  const ul = document.getElementById('namespaces-manage-list');
+  if (!ul || !window.electronAPI.listNamespaces) return;
+  const list = await window.electronAPI.listNamespaces();
+  const active = await window.electronAPI.getActiveNamespace();
+  ul.replaceChildren();
+  for (const n of list) {
+    const li = document.createElement('li');
+    li.className = 'namespaces-manage-item';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ns-name';
+    nameSpan.appendChild(document.createTextNode(n));
+    if (n === active) {
+      nameSpan.appendChild(document.createTextNode(' '));
+      const em = document.createElement('em');
+      em.textContent = '(active)';
+      nameSpan.appendChild(em);
+    }
+    const actions = document.createElement('span');
+    actions.className = 'ns-actions';
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'btn btn-secondary btn-sm';
+    renameBtn.textContent = 'Rename';
+    renameBtn.addEventListener('click', async () => {
+      const to = prompt(`Rename namespace "${n}" to:`, n);
+      if (to === null) return;
+      const trimmed = to.trim();
+      if (!trimmed || trimmed === n) return;
+      const res = await window.electronAPI.renameNamespace(n, trimmed);
+      if (!res.ok) {
+        alert(res.error || 'Rename failed');
+        return;
+      }
+      await populateNamespaceSelect();
+      await renderNamespacesManageList();
+    });
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn btn-danger btn-sm';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', async () => {
+      if (!confirm(`Delete namespace "${n}" and all its data? This cannot be undone.`)) {
+        return;
+      }
+      const res = await window.electronAPI.deleteNamespace(n);
+      if (!res.ok) {
+        alert(res.error || 'Delete failed');
+        return;
+      }
+      await populateNamespaceSelect();
+      await renderNamespacesManageList();
+    });
+    actions.appendChild(renameBtn);
+    actions.appendChild(deleteBtn);
+    li.appendChild(nameSpan);
+    li.appendChild(actions);
+    ul.appendChild(li);
+  }
+}
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', async () => {
@@ -36,7 +149,9 @@ async function initializeApp() {
   } catch (error) {
     console.error('Error loading app version:', error);
   }
-  
+
+  await populateNamespaceSelect();
+
   // Load settings
   const settings = await window.electronAPI.getSettings();
   if (settings.splitterPosition) {
@@ -59,6 +174,9 @@ async function initializeApp() {
     updateMRUList();
   }
 
+  // Initialize web search checkbox
+  initWebSearchCheckbox(settings);
+
   // Setup splitters
   setupSplitter();
   setupSearchSplitter();
@@ -67,6 +185,14 @@ async function initializeApp() {
 
   // Setup tree navigation
   setupTreeNavigation();
+
+  // Default to Vector Store screen
+  const defaultNode = document.querySelector('.tree-item[data-node="vector-store"]');
+  if (defaultNode) {
+    document.querySelectorAll('.tree-item').forEach(i => i.classList.remove('active'));
+    defaultNode.classList.add('active');
+    showCanvas('vector-store');
+  }
 
   // Load initial data
   await refreshFiles();
@@ -92,6 +218,12 @@ async function initializeApp() {
   window.electronAPI.onMCPServerLog((data) => {
     addServerLog(data);
   });
+
+  if (window.electronAPI.onNamespaceChanged) {
+    window.electronAPI.onNamespaceChanged(async () => {
+      await reloadNamespaceContext();
+    });
+  }
 }
 
 function hideLoadingScreen() {
@@ -100,6 +232,60 @@ function hideLoadingScreen() {
 }
 
 function setupEventListeners() {
+  const namespaceSelect = document.getElementById('namespace-select');
+  if (namespaceSelect) {
+    namespaceSelect.addEventListener('change', async () => {
+      if (namespaceSelectProgrammatic) return;
+      const name = namespaceSelect.value;
+      const res = await window.electronAPI.setActiveNamespace(name);
+      if (!res.ok) {
+        alert(res.error || 'Could not switch namespace');
+        await populateNamespaceSelect();
+        return;
+      }
+      /* reloadNamespaceContext runs via namespace-changed from main */
+    });
+  }
+
+  const manageNsBtn = document.getElementById('manage-namespaces-btn');
+  if (manageNsBtn) {
+    manageNsBtn.addEventListener('click', () => openNamespacesModal());
+  }
+
+  const nsModalClose = document.getElementById('namespaces-modal-close');
+  if (nsModalClose) {
+    nsModalClose.addEventListener('click', () => closeNamespacesModal());
+  }
+  const nsModalDone = document.getElementById('namespaces-modal-done');
+  if (nsModalDone) {
+    nsModalDone.addEventListener('click', () => closeNamespacesModal());
+  }
+  const nsModalOverlay = document.getElementById('namespaces-modal-overlay');
+  if (nsModalOverlay) {
+    nsModalOverlay.addEventListener('click', (e) => {
+      if (e.target === nsModalOverlay) closeNamespacesModal();
+    });
+  }
+  const nsAddBtn = document.getElementById('namespace-add-btn');
+  if (nsAddBtn) {
+    nsAddBtn.addEventListener('click', async () => {
+      const input = document.getElementById('namespace-new-name');
+      const raw = (input && input.value) ? input.value.trim() : '';
+      if (!raw) {
+        alert('Enter a namespace name.');
+        return;
+      }
+      const res = await window.electronAPI.createNamespace(raw);
+      if (!res.ok) {
+        alert(res.error || 'Could not create namespace');
+        return;
+      }
+      if (input) input.value = '';
+      await populateNamespaceSelect();
+      await renderNamespacesManageList();
+    });
+  }
+
   // Settings button
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) {
@@ -117,6 +303,13 @@ function setupEventListeners() {
     });
   } else {
     console.error('Help button element not found when setting up event listeners');
+  }
+
+  const searchDevtoolsBtn = document.getElementById('search-devtools-btn');
+  if (searchDevtoolsBtn) {
+    searchDevtoolsBtn.addEventListener('click', () => {
+      window.electronAPI.toggleDevTools();
+    });
   }
 
   // File management
@@ -179,35 +372,16 @@ function setupEventListeners() {
     await performSelfTest();
   });
 
-  // Chunking settings (in settings modal)
-  const saveChunkingSettingsBtn = document.getElementById('settings-save-chunking-settings-btn');
-  if (saveChunkingSettingsBtn) {
-    saveChunkingSettingsBtn.addEventListener('click', async () => {
-      await saveChunkingSettings();
-    });
-  }
-
-  // Retrieval settings (in settings modal)
-  const saveRetrievalSettingsBtn = document.getElementById('settings-save-retrieval-settings-btn');
-  if (saveRetrievalSettingsBtn) {
-    saveRetrievalSettingsBtn.addEventListener('click', async () => {
-      await saveRetrievalSettings();
-    });
-  }
-
-  // Metadata & Filtering settings (in settings modal)
-  const saveMetadataFilteringSettingsBtn = document.getElementById('settings-save-metadata-filtering-settings-btn');
-  if (saveMetadataFilteringSettingsBtn) {
-    saveMetadataFilteringSettingsBtn.addEventListener('click', async () => {
-      await saveMetadataFilteringSettings();
-    });
-  }
-
-  // Server settings (in settings modal)
-  const saveServerSettingsBtn = document.getElementById('settings-save-server-settings-btn');
-  if (saveServerSettingsBtn) {
-    saveServerSettingsBtn.addEventListener('click', async () => {
-      await saveServerSettings();
+  // Toggle API key visibility
+  const toggleApiKeyBtn = document.getElementById('toggle-api-key-visibility-btn');
+  if (toggleApiKeyBtn) {
+    toggleApiKeyBtn.addEventListener('click', () => {
+      const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
+      if (apiKeyInput) {
+        const isPassword = apiKeyInput.type === 'password';
+        apiKeyInput.type = isPassword ? 'text' : 'password';
+        toggleApiKeyBtn.textContent = isPassword ? 'Hide' : 'Show';
+      }
     });
   }
 
@@ -1130,6 +1304,32 @@ function cancelSearch() {
   }
 }
 
+function escapeSearchHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function initWebSearchCheckbox(settings) {
+  const checkbox = document.getElementById('web-search-enabled');
+  const status = document.getElementById('web-search-status');
+  if (!checkbox || !status) return;
+
+  const configured = settings.webSearchEnabled && settings.webSearchApiKey && settings.webSearchCx;
+  if (!configured) {
+    checkbox.disabled = true;
+    checkbox.checked = false;
+    status.textContent = '(configure in Settings > Web Search)';
+    status.style.color = '#999';
+  } else {
+    checkbox.disabled = false;
+    checkbox.checked = true;
+    status.textContent = '';
+  }
+}
+
 async function performSearch() {
   const query = document.getElementById('search-input').value.trim();
   if (!query) return;
@@ -1168,6 +1368,12 @@ async function performSearch() {
   if (timeDisplay) {
     timeDisplay.textContent = '';
   }
+
+  const warnBoxStart = document.getElementById('search-warnings-errors');
+  if (warnBoxStart) {
+    warnBoxStart.innerHTML = '';
+    warnBoxStart.style.display = 'none';
+  }
   
   // Start timer
   startSearchTimer();
@@ -1201,7 +1407,14 @@ async function performSearch() {
       return;
     }
     
-    const results = await window.electronAPI.search(query, 10, algorithm);
+    const webSearchCheckbox = document.getElementById('web-search-enabled');
+    const webSearchEnabled = webSearchCheckbox ? webSearchCheckbox.checked : false;
+    const searchPayload = await window.electronAPI.search(query, 10, algorithm, { webSearch: webSearchEnabled });
+    const results = searchPayload && Array.isArray(searchPayload.results) ? searchPayload.results : [];
+    const searchWarnings = (searchPayload && searchPayload.warnings) || [];
+    const searchErrors = (searchPayload && searchPayload.errors) || [];
+    for (const w of searchWarnings) console.warn('[search]', w);
+    for (const e of searchErrors) console.error('[search]', e);
     
     // Check if cancelled after search completes
     if (searchCancelled) {
@@ -1223,12 +1436,29 @@ async function performSearch() {
     
     const resultsDiv = document.getElementById('search-results');
     const tbody = document.getElementById('search-results-tbody');
-    
+    const warnBox = document.getElementById('search-warnings-errors');
+    if (warnBox) {
+      warnBox.innerHTML = '';
+      const parts = [];
+      for (const w of searchWarnings) {
+        parts.push(`<div class="search-message search-message-warning">${escapeSearchHtml(w)}</div>`);
+      }
+      for (const e of searchErrors) {
+        parts.push(`<div class="search-message search-message-error">${escapeSearchHtml(e)}</div>`);
+      }
+      if (parts.length) {
+        warnBox.innerHTML = `<div class="search-messages-header">Warnings / errors</div>${parts.join('')}`;
+        warnBox.style.display = 'block';
+      } else {
+        warnBox.style.display = 'none';
+      }
+    }
+
     if (tbody) {
       tbody.innerHTML = '';
       
       if (results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center;">No results found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No results found</td></tr>';
       } else {
         results.forEach((result, index) => {
           const row = document.createElement('tr');
@@ -1250,9 +1480,15 @@ async function performSearch() {
             scoreDisplay = 'N/A';
           }
           
+          const isWeb = result.metadata?.source === 'web';
+          const sourceBadge = isWeb
+            ? '<span class="source-badge source-web">Web</span>'
+            : '<span class="source-badge source-local">Local</span>';
+          
           row.innerHTML = `
             <td><span class="similarity-score">${scoreDisplay}</span></td>
             <td><span class="algorithm-badge">${result.algorithm || 'Hybrid'}</span></td>
+            <td>${sourceBadge}</td>
             <td>${result.metadata?.fileName || 'Unknown'}</td>
             <td>${preview}</td>
           `;
@@ -1886,37 +2122,275 @@ async function loadServerSettings() {
   }
 }
 
-async function saveServerSettings() {
+/**
+ * Read every Settings modal field into `settings` (mutates). Same validation as the old per-tab saves.
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+function applyAllSettingsModalFieldsToSettings(settings) {
+  const chunkSizeInput = document.getElementById('settings-chunk-size-input');
+  const chunkOverlapInput = document.getElementById('settings-chunk-overlap-input');
+  const minChunkCharsInput = document.getElementById('settings-min-chunk-chars-input');
+  const minChunkTokensInput = document.getElementById('settings-min-chunk-tokens-input');
+  const maxChunksInput = document.getElementById('settings-max-chunks-input');
+  const embeddingModelInput = document.getElementById('settings-embedding-model-input');
+  const normalizeEmbeddingsInput = document.getElementById('settings-normalize-embeddings-input');
+  if (!chunkSizeInput || !chunkOverlapInput) {
+    return { ok: false, message: 'Settings form is missing chunking fields.' };
+  }
+  const chunkSize = parseInt(chunkSizeInput.value, 10) || 1000;
+  const chunkOverlap = parseInt(chunkOverlapInput.value, 10) || 200;
+  const minChunkChars = parseInt(minChunkCharsInput?.value, 10) || 0;
+  const minChunkTokens = parseInt(minChunkTokensInput?.value, 10) || 0;
+  const maxChunks = parseInt(maxChunksInput?.value, 10) || 0;
+  const embeddingModel = embeddingModelInput?.value || 'Xenova/all-MiniLM-L6-v2';
+  const normalizeEmbeddings = normalizeEmbeddingsInput?.checked !== false;
+  if (chunkSize < 100 || chunkSize > 10000) {
+    return { ok: false, message: 'Chunk size must be between 100 and 10000 characters' };
+  }
+  if (chunkOverlap < 0 || chunkOverlap > 5000) {
+    return { ok: false, message: 'Overlap must be between 0 and 5000 characters' };
+  }
+  if (chunkOverlap >= chunkSize) {
+    return { ok: false, message: 'Overlap must be less than chunk size' };
+  }
+  if (minChunkChars < 0 || minChunkChars > 500) {
+    return { ok: false, message: 'Min chunk chars must be between 0 and 500' };
+  }
+  if (minChunkTokens < 0 || minChunkTokens > 200) {
+    return { ok: false, message: 'Min chunk tokens must be between 0 and 200' };
+  }
+  if (maxChunks < 0 || maxChunks > 10000) {
+    return { ok: false, message: 'Max chunks per document must be between 0 and 10000' };
+  }
+  settings.chunkSize = chunkSize;
+  settings.chunkOverlap = chunkOverlap;
+  settings.minChunkChars = minChunkChars;
+  settings.minChunkTokens = minChunkTokens;
+  settings.maxChunksPerDocument = maxChunks;
+  settings.embeddingModel = embeddingModel;
+  settings.normalizeEmbeddings = normalizeEmbeddings;
+
+  const topKInput = document.getElementById('settings-top-k-input');
+  const scoreThresholdInput = document.getElementById('settings-score-threshold-input');
+  const maxChunksPerDocInput = document.getElementById('settings-max-chunks-per-doc-input');
+  const groupByDocInput = document.getElementById('settings-group-by-doc-input');
+  const returnFullDocsInput = document.getElementById('settings-return-full-docs-input');
+  const maxContextTokensInput = document.getElementById('settings-max-context-tokens-input');
+  if (!topKInput || !scoreThresholdInput) {
+    return { ok: false, message: 'Settings form is missing retrieval fields.' };
+  }
+  const topK = parseInt(topKInput.value, 10) || 10;
+  const scoreThreshold = parseFloat(scoreThresholdInput.value) || 0;
+  const maxChunksPerDoc = parseInt(maxChunksPerDocInput?.value, 10) || 0;
+  const groupByDoc = groupByDocInput?.checked || false;
+  const returnFullDocs = returnFullDocsInput?.checked || false;
+  const maxContextTokens = parseInt(maxContextTokensInput?.value, 10) || 0;
+  if (topK < 1 || topK > 100) {
+    return { ok: false, message: 'Top K must be between 1 and 100' };
+  }
+  if (scoreThreshold < 0 || scoreThreshold > 1) {
+    return { ok: false, message: 'Score threshold must be between 0 and 1' };
+  }
+  if (maxChunksPerDoc < 0 || maxChunksPerDoc > 100) {
+    return { ok: false, message: 'Max chunks per document must be between 0 and 100' };
+  }
+  if (maxContextTokens < 0 || maxContextTokens > 100000) {
+    return { ok: false, message: 'Max context tokens must be between 0 and 100000' };
+  }
+  settings.retrievalTopK = topK;
+  settings.retrievalScoreThreshold = scoreThreshold;
+  settings.retrievalMaxChunksPerDoc = maxChunksPerDoc;
+  settings.retrievalGroupByDoc = groupByDoc;
+  settings.retrievalReturnFullDocs = returnFullDocs;
+  settings.retrievalMaxContextTokens = maxContextTokens;
+
+  const sinceDaysInput = document.getElementById('settings-since-days-input');
+  const timeDecayEnabledInput = document.getElementById('settings-time-decay-enabled-input');
+  const timeDecayHalfLifeInput = document.getElementById('settings-time-decay-half-life-input');
+  if (!sinceDaysInput || !timeDecayEnabledInput || !timeDecayHalfLifeInput) {
+    return { ok: false, message: 'Settings form is missing metadata / filtering fields.' };
+  }
+  const sinceDays = parseInt(sinceDaysInput.value, 10) || 0;
+  const timeDecayEnabled = timeDecayEnabledInput.checked || false;
+  const timeDecayHalfLifeDays = parseInt(timeDecayHalfLifeInput.value, 10) || 30;
+  if (sinceDays < 0 || sinceDays > 3650) {
+    return { ok: false, message: 'Since days must be between 0 and 3650' };
+  }
+  if (timeDecayHalfLifeDays < 1 || timeDecayHalfLifeDays > 3650) {
+    return { ok: false, message: 'Time decay half life days must be between 1 and 3650' };
+  }
+  settings.metadataSinceDays = sinceDays;
+  settings.metadataTimeDecayEnabled = timeDecayEnabled;
+  settings.metadataTimeDecayHalfLifeDays = timeDecayHalfLifeDays;
+
+  const minimizeInput = document.getElementById('settings-minimize-to-tray-input');
+  if (minimizeInput) {
+    settings.minimizeToTray = minimizeInput.checked;
+  }
+
   const serverPortInput = document.getElementById('settings-server-port-input');
   const autoStartServerInput = document.getElementById('settings-auto-start-server-input');
-  
   if (!serverPortInput || !autoStartServerInput) {
-    return;
+    return { ok: false, message: 'Settings form is missing server fields.' };
   }
-  
-  const serverPort = parseInt(serverPortInput.value) || 3000;
+  const serverPort = parseInt(serverPortInput.value, 10) || 3000;
   const autoStartServer = autoStartServerInput.checked || false;
-  
-  // Validate port
   if (serverPort < 1024 || serverPort > 65535) {
-    alert('Port must be between 1024 and 65535');
-    return;
+    return { ok: false, message: 'Port must be between 1024 and 65535' };
   }
-  
-  const settings = await window.electronAPI.getSettings();
   settings.serverPort = serverPort;
   settings.autoStartServer = autoStartServer;
-  await window.electronAPI.saveSettings(settings);
+
+  const enabledInput = document.getElementById('settings-web-search-enabled-input');
+  const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
+  const cxInput = document.getElementById('settings-web-search-cx-input');
+  const maxResultsInput = document.getElementById('settings-web-search-max-results-input');
+  const timeoutSecondsInput = document.getElementById('settings-web-search-timeout-seconds-input');
+  const safeSearchInput = document.getElementById('settings-web-search-safe-search-input');
+  const fetchPagesInput = document.getElementById('settings-web-search-fetch-pages-input');
+  const fetchMaxMbInput = document.getElementById('settings-web-search-fetch-max-mb-input');
+  const pageTimeoutSecondsInput = document.getElementById('settings-web-search-page-timeout-seconds-input');
+  if (
+    !enabledInput ||
+    !apiKeyInput ||
+    !cxInput ||
+    !maxResultsInput ||
+    !timeoutSecondsInput ||
+    !safeSearchInput ||
+    !fetchPagesInput ||
+    !fetchMaxMbInput ||
+    !pageTimeoutSecondsInput
+  ) {
+    return { ok: false, message: 'Settings form is missing web search fields.' };
+  }
+  const webEnabled = enabledInput.checked || false;
+  const apiKey = apiKeyInput.value?.trim() || '';
+  const cx = cxInput.value?.trim() || '';
+  const maxResults = parseInt(maxResultsInput.value, 10) || 5;
+  const timeoutSeconds = parseInt(timeoutSecondsInput.value, 10);
+  const safeSearch = safeSearchInput.value || 'off';
+  if (webEnabled && !apiKey) {
+    return { ok: false, message: 'API Key is required when Web Search is enabled.' };
+  }
+  if (webEnabled && !cx) {
+    return { ok: false, message: 'Search Engine ID (CX) is required when Web Search is enabled.' };
+  }
+  if (maxResults < 1 || maxResults > 10) {
+    return { ok: false, message: 'Max results must be between 1 and 10.' };
+  }
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0 || timeoutSeconds > 120) {
+    return { ok: false, message: 'Web search timeout must be between 0 and 120 seconds (0 = no limit).' };
+  }
+  const fetchMaxMb = parseFloat(fetchMaxMbInput.value);
+  if (!Number.isFinite(fetchMaxMb) || fetchMaxMb < 0.25 || fetchMaxMb > 10) {
+    return { ok: false, message: 'Max page size must be between 0.25 and 10 MB.' };
+  }
+  const pageTimeoutSeconds = parseInt(pageTimeoutSecondsInput.value, 10);
+  if (!Number.isFinite(pageTimeoutSeconds) || pageTimeoutSeconds < 0 || pageTimeoutSeconds > 120) {
+    return { ok: false, message: 'Per-page timeout must be between 0 and 120 seconds (0 = no limit).' };
+  }
+  settings.webSearchEnabled = webEnabled;
+  settings.webSearchApiKey = apiKey;
+  settings.webSearchCx = cx;
+  settings.webSearchMaxResults = maxResults;
+  settings.webSearchSafeSearch = safeSearch;
+  settings.webSearchTimeoutMs = timeoutSeconds <= 0 ? 0 : Math.round(timeoutSeconds * 1000);
+  settings.webSearchFetchPages = fetchPagesInput.checked;
+  settings.webSearchFetchMaxBytes = Math.min(
+    Math.max(Math.round(fetchMaxMb * 1048576), 4096),
+    10 * 1024 * 1024
+  );
+  settings.webSearchPageFetchTimeoutMs =
+    pageTimeoutSeconds <= 0 ? 0 : Math.round(pageTimeoutSeconds * 1000);
+
+  return { ok: true };
+}
+
+async function persistSettingsModal() {
+  try {
+    const settings = await window.electronAPI.getSettings();
+    const r = applyAllSettingsModalFieldsToSettings(settings);
+    if (!r.ok) {
+      alert(r.message);
+      return false;
+    }
+    await window.electronAPI.saveSettings(settings);
+    initWebSearchCheckbox(await window.electronAPI.getSettings());
+    return true;
+  } catch (e) {
+    console.error('persistSettingsModal', e);
+    alert(`Could not save settings: ${e.message}`);
+    return false;
+  }
+}
+
+async function loadGeneralSettings() {
+  const settings = await window.electronAPI.getSettings();
+  const input = document.getElementById('settings-minimize-to-tray-input');
+  if (input) {
+    input.checked = settings.minimizeToTray || false;
+  }
+}
+
+async function loadWebSearchSettings() {
+  const settings = await window.electronAPI.getSettings();
   
-  // Show confirmation
-  const btn = document.getElementById('settings-save-server-settings-btn');
-  const originalText = btn.textContent;
-  btn.textContent = '✓ Saved!';
-  btn.style.background = '#4caf50';
-  setTimeout(() => {
-    btn.textContent = originalText;
-    btn.style.background = '';
-  }, 2000);
+  const enabledInput = document.getElementById('settings-web-search-enabled-input');
+  if (enabledInput) {
+    enabledInput.checked = settings.webSearchEnabled || false;
+  }
+  
+  const apiKeyInput = document.getElementById('settings-web-search-api-key-input');
+  if (apiKeyInput) {
+    apiKeyInput.value = settings.webSearchApiKey || '';
+    apiKeyInput.type = 'password';
+  }
+  
+  const toggleBtn = document.getElementById('toggle-api-key-visibility-btn');
+  if (toggleBtn) {
+    toggleBtn.textContent = 'Show';
+  }
+  
+  const cxInput = document.getElementById('settings-web-search-cx-input');
+  if (cxInput) {
+    cxInput.value = settings.webSearchCx || '';
+  }
+  
+  const maxResultsInput = document.getElementById('settings-web-search-max-results-input');
+  if (maxResultsInput) {
+    maxResultsInput.value = settings.webSearchMaxResults || 5;
+  }
+  
+  const timeoutSecondsInput = document.getElementById('settings-web-search-timeout-seconds-input');
+  if (timeoutSecondsInput) {
+    const ms = settings.webSearchTimeoutMs;
+    const sec = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 0;
+    timeoutSecondsInput.value = sec;
+  }
+
+  const safeSearchInput = document.getElementById('settings-web-search-safe-search-input');
+  if (safeSearchInput) {
+    safeSearchInput.value = settings.webSearchSafeSearch || 'off';
+  }
+
+  const fetchPagesInput = document.getElementById('settings-web-search-fetch-pages-input');
+  if (fetchPagesInput) {
+    fetchPagesInput.checked = settings.webSearchFetchPages !== false;
+  }
+
+  const fetchMaxMbInput = document.getElementById('settings-web-search-fetch-max-mb-input');
+  if (fetchMaxMbInput) {
+    const b = Number(settings.webSearchFetchMaxBytes) || 1048576;
+    const mb = Math.round((b / 1048576) * 1000) / 1000;
+    fetchMaxMbInput.value = String(Math.min(10, Math.max(0.25, mb || 1)));
+  }
+
+  const pageTimeoutSecondsInput = document.getElementById('settings-web-search-page-timeout-seconds-input');
+  if (pageTimeoutSecondsInput) {
+    const ms = Number(settings.webSearchPageFetchTimeoutMs);
+    const sec = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 0;
+    pageTimeoutSecondsInput.value = sec;
+  }
 }
 
 async function checkAndAutoStartServer() {
@@ -2043,66 +2517,6 @@ async function loadRetrievalSettings() {
   }
 }
 
-async function saveRetrievalSettings() {
-  const topKInput = document.getElementById('settings-top-k-input');
-  const scoreThresholdInput = document.getElementById('settings-score-threshold-input');
-  const maxChunksPerDocInput = document.getElementById('settings-max-chunks-per-doc-input');
-  const groupByDocInput = document.getElementById('settings-group-by-doc-input');
-  const returnFullDocsInput = document.getElementById('settings-return-full-docs-input');
-  const maxContextTokensInput = document.getElementById('settings-max-context-tokens-input');
-  
-  if (!topKInput || !scoreThresholdInput) {
-    return;
-  }
-  
-  const topK = parseInt(topKInput.value) || 10;
-  const scoreThreshold = parseFloat(scoreThresholdInput.value) || 0;
-  const maxChunksPerDoc = parseInt(maxChunksPerDocInput?.value) || 0;
-  const groupByDoc = groupByDocInput?.checked || false;
-  const returnFullDocs = returnFullDocsInput?.checked || false;
-  const maxContextTokens = parseInt(maxContextTokensInput?.value) || 0;
-  
-  // Validate values
-  if (topK < 1 || topK > 100) {
-    alert('Top K must be between 1 and 100');
-    return;
-  }
-  
-  if (scoreThreshold < 0 || scoreThreshold > 1) {
-    alert('Score threshold must be between 0 and 1');
-    return;
-  }
-  
-  if (maxChunksPerDoc < 0 || maxChunksPerDoc > 100) {
-    alert('Max chunks per document must be between 0 and 100');
-    return;
-  }
-  
-  if (maxContextTokens < 0 || maxContextTokens > 100000) {
-    alert('Max context tokens must be between 0 and 100000');
-    return;
-  }
-  
-  const settings = await window.electronAPI.getSettings();
-  settings.retrievalTopK = topK;
-  settings.retrievalScoreThreshold = scoreThreshold;
-  settings.retrievalMaxChunksPerDoc = maxChunksPerDoc;
-  settings.retrievalGroupByDoc = groupByDoc;
-  settings.retrievalReturnFullDocs = returnFullDocs;
-  settings.retrievalMaxContextTokens = maxContextTokens;
-  await window.electronAPI.saveSettings(settings);
-  
-  // Show confirmation
-  const btn = document.getElementById('settings-save-retrieval-settings-btn');
-  const originalText = btn.textContent;
-  btn.textContent = '✓ Saved!';
-  btn.style.background = '#4caf50';
-  setTimeout(() => {
-    btn.textContent = originalText;
-    btn.style.background = '';
-  }, 2000);
-}
-
 async function loadMetadataFilteringSettings() {
   const settings = await window.electronAPI.getSettings();
   
@@ -2123,120 +2537,6 @@ async function loadMetadataFilteringSettings() {
   if (timeDecayHalfLifeInput) {
     timeDecayHalfLifeInput.value = settings.metadataTimeDecayHalfLifeDays || 30;
   }
-}
-
-async function saveMetadataFilteringSettings() {
-  const sinceDaysInput = document.getElementById('settings-since-days-input');
-  const timeDecayEnabledInput = document.getElementById('settings-time-decay-enabled-input');
-  const timeDecayHalfLifeInput = document.getElementById('settings-time-decay-half-life-input');
-  
-  if (!sinceDaysInput || !timeDecayEnabledInput || !timeDecayHalfLifeInput) {
-    return;
-  }
-  
-  const sinceDays = parseInt(sinceDaysInput.value) || 0;
-  const timeDecayEnabled = timeDecayEnabledInput.checked || false;
-  const timeDecayHalfLifeDays = parseInt(timeDecayHalfLifeInput.value) || 30;
-  
-  // Validate values
-  if (sinceDays < 0 || sinceDays > 3650) {
-    alert('Since days must be between 0 and 3650');
-    return;
-  }
-  
-  if (timeDecayHalfLifeDays < 1 || timeDecayHalfLifeDays > 3650) {
-    alert('Time decay half life days must be between 1 and 3650');
-    return;
-  }
-  
-  const settings = await window.electronAPI.getSettings();
-  settings.metadataSinceDays = sinceDays;
-  settings.metadataTimeDecayEnabled = timeDecayEnabled;
-  settings.metadataTimeDecayHalfLifeDays = timeDecayHalfLifeDays;
-  await window.electronAPI.saveSettings(settings);
-  
-  // Show confirmation
-  const btn = document.getElementById('settings-save-metadata-filtering-settings-btn');
-  const originalText = btn.textContent;
-  btn.textContent = '✓ Saved!';
-  btn.style.background = '#4caf50';
-  setTimeout(() => {
-    btn.textContent = originalText;
-    btn.style.background = '';
-  }, 2000);
-}
-
-async function saveChunkingSettings() {
-  const chunkSizeInput = document.getElementById('settings-chunk-size-input');
-  const chunkOverlapInput = document.getElementById('settings-chunk-overlap-input');
-  const minChunkCharsInput = document.getElementById('settings-min-chunk-chars-input');
-  const minChunkTokensInput = document.getElementById('settings-min-chunk-tokens-input');
-  const maxChunksInput = document.getElementById('settings-max-chunks-input');
-  const embeddingModelInput = document.getElementById('settings-embedding-model-input');
-  const normalizeEmbeddingsInput = document.getElementById('settings-normalize-embeddings-input');
-  
-  if (!chunkSizeInput || !chunkOverlapInput) {
-    return;
-  }
-  
-  const chunkSize = parseInt(chunkSizeInput.value) || 1000;
-  const chunkOverlap = parseInt(chunkOverlapInput.value) || 200;
-  const minChunkChars = parseInt(minChunkCharsInput?.value) || 0;
-  const minChunkTokens = parseInt(minChunkTokensInput?.value) || 0;
-  const maxChunks = parseInt(maxChunksInput?.value) || 0;
-  const embeddingModel = embeddingModelInput?.value || 'Xenova/all-MiniLM-L6-v2';
-  const normalizeEmbeddings = normalizeEmbeddingsInput?.checked !== false;
-  
-  // Validate values (allow wider ranges for backward compatibility)
-  if (chunkSize < 100 || chunkSize > 10000) {
-    alert('Chunk size must be between 100 and 10000 characters');
-    return;
-  }
-  
-  if (chunkOverlap < 0 || chunkOverlap > 5000) {
-    alert('Overlap must be between 0 and 5000 characters');
-    return;
-  }
-  
-  if (chunkOverlap >= chunkSize) {
-    alert('Overlap must be less than chunk size');
-    return;
-  }
-  
-  if (minChunkChars < 0 || minChunkChars > 500) {
-    alert('Min chunk chars must be between 0 and 500');
-    return;
-  }
-  
-  if (minChunkTokens < 0 || minChunkTokens > 200) {
-    alert('Min chunk tokens must be between 0 and 200');
-    return;
-  }
-  
-  if (maxChunks < 0 || maxChunks > 10000) {
-    alert('Max chunks per document must be between 0 and 10000');
-    return;
-  }
-  
-  const settings = await window.electronAPI.getSettings();
-  settings.chunkSize = chunkSize;
-  settings.chunkOverlap = chunkOverlap;
-  settings.minChunkChars = minChunkChars;
-  settings.minChunkTokens = minChunkTokens;
-  settings.maxChunksPerDocument = maxChunks;
-  settings.embeddingModel = embeddingModel;
-  settings.normalizeEmbeddings = normalizeEmbeddings;
-  await window.electronAPI.saveSettings(settings);
-  
-  // Show confirmation
-  const btn = document.getElementById('settings-save-chunking-settings-btn');
-  const originalText = btn.textContent;
-  btn.textContent = '✓ Saved!';
-  btn.style.background = '#4caf50';
-  setTimeout(() => {
-    btn.textContent = originalText;
-    btn.style.background = '';
-  }, 2000);
 }
 
 async function regenerateVectorStore() {
@@ -2766,7 +3066,9 @@ async function showSettingsModal() {
   await loadChunkingSettings();
   await loadRetrievalSettings();
   await loadMetadataFilteringSettings();
+  await loadGeneralSettings();
   await loadServerSettings();
+  await loadWebSearchSettings();
   
   // Clean up previous event handlers
   if (settingsModalOverlayClickHandler) {
@@ -2779,7 +3081,7 @@ async function showSettingsModal() {
   // Close on overlay click
   settingsModalOverlayClickHandler = (e) => {
     if (e.target === modal) {
-      closeSettingsModal();
+      void closeSettingsModal();
     }
   };
   modal.addEventListener('click', settingsModalOverlayClickHandler);
@@ -2787,7 +3089,7 @@ async function showSettingsModal() {
   // Close on Escape key
   settingsModalEscapeKeyHandler = (e) => {
     if (e.key === 'Escape') {
-      closeSettingsModal();
+      void closeSettingsModal();
     }
   };
   document.addEventListener('keydown', settingsModalEscapeKeyHandler);
@@ -2796,13 +3098,14 @@ async function showSettingsModal() {
   modal.style.display = 'flex';
 }
 
-window.closeSettingsModal = function() {
+window.closeSettingsModal = async function () {
   const modal = document.getElementById('settings-modal-overlay');
-  if (modal) {
-    modal.style.display = 'none';
-  }
-  
-  // Clean up event handlers
+  if (!modal) return;
+  const ok = await persistSettingsModal();
+  if (!ok) return;
+
+  modal.style.display = 'none';
+
   if (settingsModalOverlayClickHandler) {
     modal.removeEventListener('click', settingsModalOverlayClickHandler);
     settingsModalOverlayClickHandler = null;

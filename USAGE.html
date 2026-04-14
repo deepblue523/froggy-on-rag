@@ -595,9 +595,14 @@ npm start
 
 <h2>💾 Data Storage</h2>
 
-<p>All application data is stored securely in:</p>
+<p>All application data is stored securely under <code>~/froggy-rag-mcp/</code>:</p>
 
-<pre><code>~/froggy-rag-mcp/data/
+<pre><code>~/froggy-rag-mcp/
+  settings.json
+  data/
+    &lt;namespace&gt;/
+      vector_store.db
+      namespace.json
 </code></pre>
 
 <h3>📦 Storage Contents</h3>
@@ -620,7 +625,7 @@ npm start
     </tr>
     <tr>
       <td>🪟 <strong>Window State</strong></td>
-      <td>UI layout and splitter positions</td>
+      <td>Main window size/position (<code>windowState</code> in <code>settings.json</code>)</td>
     </tr>
     <tr>
       <td>👁️ <strong>Watch Configuration</strong></td>

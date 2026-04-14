@@ -5,33 +5,102 @@
  * Supports two modes:
  * 1. Stdio mode: MCP clients spawn as subprocess (default when no args)
  * 2. CLI tool mode: Direct command execution from terminal
+ *
+ * Global options (any position before or between command words):
+ *   --namespace, -n <name>   Use ~/froggy-rag-mcp/data/<name>; create if missing.
+ *   --data-path <path>       With --namespace: use this directory for DB/settings
+ *                            (vector store, namespace.json). Create if missing.
+ *                            Requires --namespace. If omitted, default data dir is used.
  */
 
-const os = require('os');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
+const {
+  ensureUserDataLayout,
+  getResolvedDataDir,
+  getDataDirForNamespace,
+  isValidNamespaceName
+} = require('../paths');
 
-// Initialize data directory (same as main app)
-const dataDir = path.join(os.homedir(), 'froggy-rag-mcp', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+/**
+ * Pull --namespace / --data-path out of argv; remaining tokens are the command.
+ */
+function extractGlobalOptions(argv) {
+  let namespace = null;
+  let dataPath = null;
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--namespace' || a === '-n') {
+      if (i + 1 >= argv.length) {
+        console.error(`${a} requires a value`);
+        process.exit(1);
+      }
+      namespace = argv[++i];
+      continue;
+    }
+    if (a === '--data-path') {
+      if (i + 1 >= argv.length) {
+        console.error('--data-path requires a value');
+        process.exit(1);
+      }
+      dataPath = argv[++i];
+      continue;
+    }
+    if (a.startsWith('--namespace=')) {
+      namespace = a.slice('--namespace='.length);
+      continue;
+    }
+    if (a.startsWith('--data-path=')) {
+      dataPath = a.slice('--data-path='.length);
+      continue;
+    }
+    rest.push(a);
+  }
+  return { namespace, dataPath, rest };
 }
+
+function resolveCliDataDir(namespace, dataPath) {
+  if (dataPath != null && dataPath !== '' && !namespace) {
+    console.error('--data-path requires --namespace');
+    process.exit(1);
+  }
+  if (namespace) {
+    if (!isValidNamespaceName(namespace)) {
+      console.error(
+        'Invalid --namespace: use 1–64 chars, start with a letter or digit, then letters, digits, - or _'
+      );
+      process.exit(1);
+    }
+    if (dataPath != null && dataPath !== '') {
+      const resolved = path.resolve(dataPath);
+      fs.mkdirSync(resolved, { recursive: true });
+      return resolved;
+    }
+    const dir = getDataDirForNamespace(namespace);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+  }
+  return getResolvedDataDir();
+}
+
+ensureUserDataLayout();
+const cliArgs = process.argv.slice(2);
+const { namespace: cliNamespace, dataPath: cliDataPath, rest: cliRest } = extractGlobalOptions(cliArgs);
+const dataDir = resolveCliDataDir(cliNamespace, cliDataPath);
 
 // Initialize services
 const { RAGService } = require('../main/services/rag-service');
 const { MCPService } = require('../main/services/mcp-service');
 
 async function main() {
-  const args = process.argv.slice(2);
-  
-  // If no arguments, run in stdio mode (for MCP clients)
-  if (args.length === 0) {
+  if (cliRest.length === 0) {
     await runStdioMode();
     return;
   }
-
-  // Otherwise, run in CLI tool mode
-  await runCLIToolMode(args);
+  await runCLIToolMode(cliRest);
 }
 
 async function runStdioMode() {
@@ -86,7 +155,7 @@ async function runCLIToolMode(args) {
         
       case 'search':
         if (args.length < 2) {
-          console.error('Usage: search <query> [--limit N] [--algorithm hybrid|bm25|tfidf|vector]');
+          console.error('Usage: search <query> [--limit N] [--algorithm hybrid|bm25|tfidf|vector] [--web]');
           process.exit(1);
         }
         await callSearchTool(mcpService, args.slice(1));
@@ -164,6 +233,8 @@ async function callSearchTool(mcpService, args) {
       params.limit = parseInt(args[++i], 10);
     } else if (args[i] === '--algorithm' && i + 1 < args.length) {
       params.algorithm = args[++i];
+    } else if (args[i] === '--web') {
+      params.webSearch = true;
     }
   }
   
@@ -181,17 +252,30 @@ function printHelp() {
 MCP CLI - Command-line interface for MCP server
 
 Usage:
-  node src/cli/mcp-cli.js                    # Run in stdio mode (for MCP clients)
-  node src/cli/mcp-cli.js <command>       # Run CLI tool mode
+  node src/cli/mcp-cli.js [options]                    # Stdio mode (MCP clients)
+  node src/cli/mcp-cli.js [options] <command>         # CLI tool mode
+
+Global options (can appear before or after the command name):
+  --namespace, -n <name>   Data under ~/froggy-rag-mcp/data/<name> (created if missing).
+                           If the folder already exists, it is used as-is.
+  --data-path <path>       With --namespace: store vector DB and namespace.json in <path>
+                           (absolute or relative to cwd). Created if missing.
+                           Ignored without --namespace.
+
+Examples:
+  froggy-rag-mcp --namespace work
+  froggy-rag-mcp -n work
+  froggy-rag-mcp search "hello" -n work
+  froggy-rag-mcp -n demo --data-path D:/rag-data stats
 
 Commands:
   tools list                                  # List all available tools
   call <tool-name> [--arg key=value] ...     # Call a tool with parameters
-  search <query> [--limit N] [--algorithm]   # Search the vector store
+  search <query> [--limit N] [--algorithm] [--web]  # Search (--web adds Google results)
   stats                                       # Get vector store statistics
   help                                        # Show this help message
 
-Examples:
+More examples:
   # List all tools
   node src/cli/mcp-cli.js tools list
 
@@ -208,8 +292,8 @@ Examples:
   node src/cli/mcp-cli.js call ingest_file --filePath "/path/to/file.pdf"
 
 Modes:
-  - Stdio mode (no args): MCP clients spawn as subprocess, communicate via stdin/stdout
-  - CLI tool mode (with args): Direct command execution from terminal
+  - Stdio mode (no command after options): MCP via stdin/stdout
+  - CLI tool mode: a command such as tools, call, search, stats, or help
 `);
 }
 
