@@ -1,4 +1,5 @@
 const { VectorStore } = require('./vector-store');
+const { getChunkSearchText } = require('./chunk-search-text');
 const natural = require('natural');
 
 class SearchService {
@@ -54,8 +55,10 @@ class SearchService {
       
       if (df === 0) return; // Term not in any document
       
-      // Inverse document frequency (IDF)
-      const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5));
+      // IDF: Lucene-style log(1 + ...) stays non-negative so very common terms
+      // (e.g. "service" in most chunks) still rank instead of going negative and
+      // filtering out every hit with score > 0.
+      const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
       
       // BM25 formula
       const numerator = tf * (this.k1 + 1);
@@ -134,7 +137,7 @@ class SearchService {
       for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
         const batch = chunks.slice(i, Math.min(i + BATCH_SIZE, chunks.length));
         batch.forEach(chunk => {
-          const terms = this.tokenize(chunk.content);
+          const terms = this.tokenize(getChunkSearchText(chunk));
           chunkLengths.push(terms.length);
           
           const uniqueTerms = new Set(terms);
@@ -145,7 +148,7 @@ class SearchService {
       }
     } else {
       chunks.forEach(chunk => {
-        const terms = this.tokenize(chunk.content);
+        const terms = this.tokenize(getChunkSearchText(chunk));
         chunkLengths.push(terms.length);
         
         const uniqueTerms = new Set(terms);
@@ -188,10 +191,10 @@ class SearchService {
       batchSize: 1000,
       includeEmbeddings: false,
       includeContent: true,
-      includeMetadata: false
+      includeMetadata: true
     }, (chunks) => {
       chunks.forEach(chunk => {
-        const terms = this.tokenize(chunk.content);
+        const terms = this.tokenize(getChunkSearchText(chunk));
         chunkLengths.push(terms.length);
         totalDocs++;
         
@@ -232,7 +235,13 @@ class SearchService {
       const batch = chunks.slice(i, Math.min(i + BATCH_SIZE, chunks.length));
       
       const batchResults = batch.map(chunk => {
-        const score = this.calculateBM25Score(queryTerms, chunk.content, avgDocLength, totalDocs, docFreqs);
+        const score = this.calculateBM25Score(
+          queryTerms,
+          getChunkSearchText(chunk),
+          avgDocLength,
+          totalDocs,
+          docFreqs
+        );
         return {
           ...chunk,
           score,
@@ -272,8 +281,8 @@ class SearchService {
     // Pre-filter: only process chunks that contain at least one query term
     // This can significantly speed up search for large datasets
     const queryTermsSet = new Set(queryTerms);
-    const hasQueryTerm = (content) => {
-      const lowerContent = content.toLowerCase();
+    const hasQueryTerm = (chunk) => {
+      const lowerContent = getChunkSearchText(chunk).toLowerCase();
       for (const term of queryTermsSet) {
         if (lowerContent.includes(term)) {
           return true;
@@ -291,12 +300,12 @@ class SearchService {
       batchSize: 1000,
       includeEmbeddings: false,
       includeContent: true,
-      includeMetadata: false
+      includeMetadata: true
     }, (chunks) => {
       const batchResults = chunks
         .filter(chunk => {
           // Quick pre-filter: skip chunks that don't contain any query terms
-          if (!hasQueryTerm(chunk.content)) {
+          if (!hasQueryTerm(chunk)) {
             skippedCount++;
             return false;
           }
@@ -304,7 +313,13 @@ class SearchService {
           return true;
         })
         .map(chunk => {
-          const score = this.calculateBM25Score(queryTerms, chunk.content, avgDocLength, totalDocs, docFreqs);
+          const score = this.calculateBM25Score(
+            queryTerms,
+            getChunkSearchText(chunk),
+            avgDocLength,
+            totalDocs,
+            docFreqs
+          );
           return {
             ...chunk,
             score,
@@ -346,7 +361,12 @@ class SearchService {
       const batch = chunks.slice(i, Math.min(i + BATCH_SIZE, chunks.length));
       
       const batchResults = batch.map(chunk => {
-        const score = this.calculateTFIDFScore(queryTerms, chunk.content, totalDocs, docFreqs);
+        const score = this.calculateTFIDFScore(
+          queryTerms,
+          getChunkSearchText(chunk),
+          totalDocs,
+          docFreqs
+        );
         return {
           ...chunk,
           score,

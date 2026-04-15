@@ -351,16 +351,9 @@ async function initializeApp() {
     showCanvas('vector-store');
   }
 
-  // Load initial data
-  await refreshFiles();
-  await refreshDirectories();
-  await refreshVectorStore();
-  await refreshServerStatus();
-  
-  // Auto-start server if enabled
-  await checkAndAutoStartServer();
+  // Reveal the main UI while RAG services finish loading in the main process (IPC below may wait).
+  hideLoadingScreen();
 
-  // Setup event listeners for updates
   window.electronAPI.onIngestionUpdate(async (data) => {
     await refreshFiles();
     // Refresh directories but preserve expanded state
@@ -380,6 +373,16 @@ async function initializeApp() {
     window.electronAPI.onNamespaceChanged(async () => {
       await reloadNamespaceContext();
     });
+  }
+
+  try {
+    await refreshFiles();
+    await refreshDirectories();
+    await refreshVectorStore();
+    await refreshServerStatus();
+    await checkAndAutoStartServer();
+  } catch (error) {
+    console.error('Error loading initial data:', error);
   }
 }
 
@@ -1969,17 +1972,17 @@ async function refreshServerStatus() {
     // Define available endpoints
     const endpoints = [
       { method: 'GET', path: '/health', description: 'Health check endpoint', requiresPayload: false, requiresParams: false },
-      { method: 'GET', path: '/status', description: 'Check connection status', requiresPayload: false, requiresParams: false },
-      { method: 'GET', path: '/tools', description: 'List all available tools', requiresPayload: false, requiresParams: false },
-      { method: 'POST', path: '/tools/search', description: 'Search the vector store', requiresPayload: true, requiresParams: false },
-      { method: 'GET', path: '/tools/documents', description: 'Get all documents', requiresPayload: false, requiresParams: false },
-      { method: 'GET', path: '/tools/documents/:documentId/chunks', description: 'Get chunks for a document', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
-      { method: 'GET', path: '/tools/chunks/:chunkId', description: 'Get chunk content by ID', requiresPayload: false, requiresParams: true, params: [{ name: 'chunkId', label: 'Chunk ID', type: 'text' }] },
-      { method: 'GET', path: '/tools/stats', description: 'Get vector store statistics', requiresPayload: false, requiresParams: false },
-      { method: 'POST', path: '/tools/ingest/file', description: 'Ingest a file', requiresPayload: true, requiresParams: false },
-      { method: 'POST', path: '/tools/ingest/directory', description: 'Ingest a directory', requiresPayload: true, requiresParams: false },
-      { method: 'POST', path: '/tools/:toolId', description: 'Invoke a specific tool w/ args', requiresPayload: true, requiresParams: true, params: [{ name: 'toolId', label: 'Tool ID', type: 'text' }] },
-      { method: 'POST', path: '/mcp', description: 'MCP Protocol (JSON-RPC 2.0)', requiresPayload: true, requiresParams: false }
+      { method: 'GET', path: '/status', description: 'Server status (port, MCP URL, admin URL, store URL)', requiresPayload: false, requiresParams: false },
+      { method: 'GET', path: '/mcp', description: 'MCP endpoint metadata (use POST for JSON-RPC)', requiresPayload: false, requiresParams: false },
+      { method: 'POST', path: '/mcp', description: 'MCP protocol — JSON-RPC 2.0 (initialize, tools/list, tools/call, …)', requiresPayload: true, requiresParams: false },
+      { method: 'GET', path: '/admin/stats', description: 'Vector store statistics (?namespace= for a specific corpus)', requiresPayload: false, requiresParams: false },
+      { method: 'POST', path: '/admin/corpus-search', description: 'Search corpus (body: query, optional namespace, webSearch)', requiresPayload: true, requiresParams: false },
+      { method: 'GET', path: '/admin/documents', description: 'List documents (?namespace= scopes one corpus)', requiresPayload: false, requiresParams: false },
+      { method: 'GET', path: '/admin/documents/:documentId', description: 'Get document by ID (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
+      { method: 'GET', path: '/admin/documents/:documentId/chunks', description: 'Chunks for document (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
+      { method: 'GET', path: '/admin/chunks/:chunkId', description: 'Get chunk by ID (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'chunkId', label: 'Chunk ID', type: 'text' }] },
+      { method: 'POST', path: '/admin/ingest/file', description: 'Ingest file (?namespace= targets corpus; omit = active)', requiresPayload: true, requiresParams: false },
+      { method: 'POST', path: '/admin/ingest/directory', description: 'Ingest directory (?namespace= targets corpus)', requiresPayload: true, requiresParams: false }
     ];
     
     endpointsTbody.innerHTML = '';
@@ -2752,7 +2755,7 @@ async function performSelfTest() {
   }
   
   const restUrl = status.restUrl || `http://localhost:${status.port}`;
-  const testUrl = `${restUrl}/tools/documents`;
+  const testUrl = `${restUrl}/admin/documents`;
   
   try {
     // Disable button during test
@@ -2818,19 +2821,21 @@ async function saveEndpointTestPayload(endpointPath, payload, params) {
 
 async function getDefaultPayload(endpointPath) {
   let defaultPayload = {};
-  if (endpointPath === '/tools/search') {
-    defaultPayload = { query: 'test query', limit: 10, algorithm: 'hybrid' };
-  } else if (endpointPath === '/tools/ingest/file') {
+  if (endpointPath === '/admin/corpus-search') {
+    defaultPayload = { query: 'test query', limit: 10, algorithm: 'hybrid', webSearch: false };
+  } else if (endpointPath === '/admin/ingest/file') {
     defaultPayload = { filePath: '', watch: false };
-  } else if (endpointPath === '/tools/ingest/directory') {
+  } else if (endpointPath === '/admin/ingest/directory') {
     defaultPayload = { dirPath: '', recursive: false, watch: false };
-  } else if (endpointPath === '/tools/:toolId') {
-    defaultPayload = { query: 'test query', limit: 10 };
   } else if (endpointPath === '/mcp') {
     defaultPayload = {
       jsonrpc: '2.0',
       method: 'initialize',
-      params: {},
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'froggy-ui-tester', version: '1.0.0' }
+      },
       id: 1
     };
   }

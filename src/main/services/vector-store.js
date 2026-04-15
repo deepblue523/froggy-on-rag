@@ -528,6 +528,11 @@ class VectorStore {
   /**
    * Cache document frequency index and statistics
    */
+  /** Bumped when lexical DF / chunk text definition changes (invalidates persisted DF cache). */
+  static get DFI_SEARCH_TEXT_VERSION() {
+    return 2;
+  }
+
   cacheDocumentFrequencyIndex(docFreqs, avgDocLength, totalDocs) {
     const now = Date.now();
     const insertDFI = this.db.prepare(`
@@ -552,6 +557,7 @@ class VectorStore {
       // Insert statistics
       insertStats.run('avgDocLength', avgDocLength, now);
       insertStats.run('totalDocs', totalDocs, now);
+      insertStats.run('dfiSearchTextVersion', VectorStore.DFI_SEARCH_TEXT_VERSION, now);
     });
 
     cacheMany();
@@ -562,8 +568,14 @@ class VectorStore {
    */
   isDocumentFrequencyIndexCacheValid() {
     const dfiCount = this.db.prepare('SELECT COUNT(*) as count FROM document_frequency_index').get().count;
+    if (dfiCount === 0) return false;
+    const versionRow = this.db.prepare(
+      'SELECT value FROM chunk_statistics WHERE key = ?'
+    ).get('dfiSearchTextVersion');
+    const v = versionRow ? Number(versionRow.value) : 0;
+    if (v < VectorStore.DFI_SEARCH_TEXT_VERSION) return false;
     const statsCount = this.db.prepare('SELECT COUNT(*) as count FROM chunk_statistics').get().count;
-    return dfiCount > 0 && statsCount >= 2; // At least avgDocLength and totalDocs
+    return statsCount >= 2; // At least avgDocLength and totalDocs
   }
 
   close() {

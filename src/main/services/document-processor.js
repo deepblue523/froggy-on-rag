@@ -7,6 +7,7 @@ const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 const { convert: htmlToText } = require('html-to-text');
 const natural = require('natural');
+const { getChunkSearchText } = require('./chunk-search-text');
 
 class DocumentProcessor {
   constructor(embeddingModel, normalizeEmbeddings = true) {
@@ -182,7 +183,10 @@ class DocumentProcessor {
         // Process batch concurrently
         await Promise.all(batch.map(async (chunk) => {
           try {
-            chunk.embedding = await this.generateEmbedding(chunk.content, this.normalizeEmbeddings);
+            chunk.embedding = await this.generateEmbedding(
+              getChunkSearchText(chunk),
+              this.normalizeEmbeddings
+            );
           } catch (error) {
             console.error(`Error generating embedding for chunk ${chunk.id}:`, error);
           }

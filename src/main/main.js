@@ -97,11 +97,11 @@ function attachServices() {
   const { MCPService } = require('./services/mcp-service');
   ragService = new RAGService(dataDir);
   mcpService = new MCPService(ragService);
-  require('./ipc-handlers')(ipcMain, ragService, mcpService);
+  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir);
 }
 
 async function destroyServices() {
-  require('./ipc-handlers')(ipcMain, null, null);
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir);
   if (mcpService) {
     try {
       await mcpService.stop();
@@ -171,6 +171,8 @@ function createWindow() {
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
+    backgroundColor: '#f5f5f5',
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -179,6 +181,12 @@ function createWindow() {
     title: `Froggy RAG MCP (v${appVersion})`,
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'renderer', 'images', 'Froggy RAG x32.png')
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+    }
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -327,7 +335,7 @@ app.whenReady().then(() => {
   registerAutoUpdaterListeners();
 
   // Register IPC handlers with null refs so renderer calls can wait for services
-  require('./ipc-handlers')(ipcMain, null, null);
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir);
 
   // Show window immediately so the app feels responsive
   createWindow();

@@ -9,6 +9,8 @@ let servicesReady = false;
 let servicesReadyPromise = null;
 let servicesReadyResolve = null;
 let handlersRegistered = false;
+/** Live active namespace data dir from main.js (for settings read before RAGService is constructed). */
+let getDataDirFn = null;
 
 function waitForServices() {
   if (servicesReady && ragServiceRef && mcpServiceRef) {
@@ -22,7 +24,10 @@ function waitForServices() {
   return servicesReadyPromise;
 }
 
-module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService) {
+module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir) {
+  if (typeof getDataDir === 'function') {
+    getDataDirFn = getDataDir;
+  }
   // Update service references if provided
   if (ragService && mcpService) {
     ragServiceRef = ragService;
@@ -173,8 +178,16 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService) {
 
   // Settings handlers
   ipcMain.handle('get-settings', async () => {
-    await waitForServices();
-    return ragServiceRef.getSettings();
+    if (servicesReady && ragServiceRef) {
+      return ragServiceRef.getSettings();
+    }
+    const paths = require('../paths');
+    const { readMergedSettingsFromDisk } = require('../settings-files');
+    const dataDir =
+      typeof getDataDirFn === 'function'
+        ? getDataDirFn()
+        : paths.getDataDirForNamespace(paths.resolveInitialNamespaceName());
+    return readMergedSettingsFromDisk(dataDir, paths.getAppSettingsPath());
   });
 
   ipcMain.handle('save-settings', async (_, settings) => {

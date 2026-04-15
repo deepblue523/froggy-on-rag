@@ -8,14 +8,14 @@ const { VectorStore } = require('./vector-store');
 const { DocumentProcessor } = require('./document-processor');
 const { SearchService } = require('./search-service');
 const { WebSearchService } = require('./web-search-service');
+const { getChunkSearchText } = require('./chunk-search-text');
 const { getAppSettingsPath } = require('../../paths');
 const {
   splitSettingsForPersist,
-  mergeSettingsLayers,
   readJsonObject,
   patchAppSettings,
   writeAppAndNamespace,
-  migrateLegacySettingsJson
+  readMergedSettingsFromDisk
 } = require('../../settings-files');
 
 /** Compare two paths for equality (case-insensitive on Windows). */
@@ -92,43 +92,8 @@ class RAGService extends EventEmitter {
     }
   }
 
-  _defaultSettings() {
-    return {
-      files: [],
-      directories: [],
-      mruSearches: [],
-      splitterPosition: 250,
-      chunkSize: 1000,
-      chunkOverlap: 200,
-      retrievalTopK: 10,
-      retrievalScoreThreshold: 0,
-      retrievalMaxChunksPerDoc: 0,
-      retrievalGroupByDoc: false,
-      retrievalReturnFullDocs: false,
-      retrievalMaxContextTokens: 0,
-      searchProfiling: false,
-      minimizeToTray: false,
-      webSearchEnabled: false,
-      webSearchApiKey: '',
-      webSearchCx: '',
-      webSearchMaxResults: 5,
-      webSearchSafeSearch: 'off',
-      webSearchTimeoutMs: 10000,
-      webSearchFetchPages: true,
-      webSearchFetchMaxBytes: 1048576,
-      webSearchPageFetchTimeoutMs: 8000
-    };
-  }
-
   loadSettings() {
-    migrateLegacySettingsJson(
-      this.legacySettingsPath,
-      this.appSettingsPath,
-      this.namespacePath
-    );
-    const appLayer = readJsonObject(this.appSettingsPath);
-    const namespaceLayer = readJsonObject(this.namespacePath);
-    return mergeSettingsLayers(this._defaultSettings(), appLayer, namespaceLayer);
+    return readMergedSettingsFromDisk(this.dataDir, this.appSettingsPath);
   }
 
   _saveSettingsToDisk() {
@@ -194,32 +159,95 @@ class RAGService extends EventEmitter {
     return this.settings;
   }
 
-  async ingestFile(filePath, watch = false) {
+  /**
+   * Ingest a single file into a specific vector store (used for primary queue and targeted corpus).
+   * @param {import('./vector-store').VectorStore} vectorStore
+   * @param {string} filePath
+   */
+  async _ingestFileIntoVectorStore(vectorStore, filePath) {
+    const fileId = this.getFileId(filePath);
+    const existingDoc = vectorStore.getDocument(fileId);
+    const { content, metadata } = await this.documentProcessor.processFile(filePath);
+    const chunkSize = this.settings.chunkSize || 1000;
+    const chunkOverlap = this.settings.chunkOverlap || 200;
+    const minChunkChars = this.settings.minChunkChars || 0;
+    const minChunkTokens = this.settings.minChunkTokens || 0;
+    const maxChunksPerDocument = this.settings.maxChunksPerDocument || 0;
+    const chunks = await this.documentProcessor.chunkContent(
+      content,
+      metadata,
+      chunkSize,
+      chunkOverlap,
+      minChunkChars,
+      minChunkTokens,
+      maxChunksPerDocument
+    );
+    vectorStore.addDocument({
+      id: fileId,
+      filePath,
+      fileName: path.basename(filePath),
+      fileType: path.extname(filePath).toLowerCase(),
+      fileSize: metadata.fileSize,
+      ingestedAt: existingDoc ? existingDoc.ingested_at : Date.now(),
+      status: 'processing'
+    });
+    vectorStore.deleteDocumentChunks(fileId);
+    const chunksWithDocId = chunks.map((chunk) => ({
+      ...chunk,
+      documentId: fileId,
+      createdAt: Date.now()
+    }));
+    vectorStore.addChunks(chunksWithDocId);
+    vectorStore.updateDocumentStatus(fileId, 'completed');
+  }
+
+  /**
+   * @param {string} filePath
+   * @param {boolean} [watch]
+   * @param {{ targetDataDir?: string, targetNamespace?: string | null }} [options]
+   * When `targetDataDir` is set and differs from this.dataDir, ingest completes synchronously into
+   * that corpus (no primary queue, no settings file entry, watch ignored).
+   */
+  async ingestFile(filePath, watch = false, options = {}) {
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found: ${filePath}`);
     }
 
+    const targetDataDir = options.targetDataDir ? path.resolve(options.targetDataDir) : null;
+    const primaryDir = path.resolve(this.dataDir);
+    if (targetDataDir && targetDataDir !== primaryDir) {
+      const vs = new VectorStore(targetDataDir);
+      try {
+        await this._ingestFileIntoVectorStore(vs, filePath);
+      } finally {
+        vs.close();
+      }
+      return {
+        fileId: this.getFileId(filePath),
+        status: 'completed',
+        namespace: options.targetNamespace || null,
+        watchIgnored: watch === true
+      };
+    }
+
     const fileId = this.getFileId(filePath);
-    
-    // Add to settings if not exists
-    let fileEntry = this.settings.files.find(f => f.path === filePath);
+
+    let fileEntry = this.settings.files.find((f) => f.path === filePath);
     if (!fileEntry) {
       fileEntry = {
         path: filePath,
         watch: watch,
-        active: true, // Default to active
+        active: true,
         id: fileId
       };
       this.settings.files.push(fileEntry);
       this._saveSettingsToDisk();
     }
 
-    // Only add to queue if active
     if (fileEntry.active !== false) {
       this.addToQueue(filePath, 'file');
     }
-    
-    // Set up file watcher if requested
+
     if (watch) {
       this.watchFile(filePath);
     }
@@ -227,36 +255,58 @@ class RAGService extends EventEmitter {
     return { fileId, status: 'queued' };
   }
 
-  async ingestDirectory(dirPath, recursive = false, watch = false) {
+  /**
+   * @param {string} dirPath
+   * @param {boolean} [recursive]
+   * @param {boolean} [watch]
+   * @param {{ targetDataDir?: string, targetNamespace?: string | null }} [options]
+   */
+  async ingestDirectory(dirPath, recursive = false, watch = false, options = {}) {
     if (!fs.existsSync(dirPath)) {
       throw new Error(`Directory not found: ${dirPath}`);
     }
 
-    // Add to settings if not exists
-    let dirEntry = this.settings.directories.find(d => d.path === dirPath);
+    const targetDataDir = options.targetDataDir ? path.resolve(options.targetDataDir) : null;
+    const primaryDir = path.resolve(this.dataDir);
+    if (targetDataDir && targetDataDir !== primaryDir) {
+      const files = this.findSupportedFiles(dirPath, recursive);
+      const vs = new VectorStore(targetDataDir);
+      try {
+        for (const file of files) {
+          await this._ingestFileIntoVectorStore(vs, file);
+        }
+      } finally {
+        vs.close();
+      }
+      return {
+        fileCount: files.length,
+        status: 'completed',
+        namespace: options.targetNamespace || null,
+        watchIgnored: watch === true
+      };
+    }
+
+    let dirEntry = this.settings.directories.find((d) => d.path === dirPath);
     if (!dirEntry) {
       dirEntry = {
         path: dirPath,
         watch: watch,
         recursive: recursive,
-        active: true, // Default to active
+        active: true,
         id: uuidv4()
       };
       this.settings.directories.push(dirEntry);
       this._saveSettingsToDisk();
     }
 
-    // Find all supported files
     const files = this.findSupportedFiles(dirPath, recursive);
-    
-    // Only add files to queue if directory is active
+
     if (dirEntry.active !== false) {
       for (const file of files) {
         this.addToQueue(file, 'file');
       }
     }
 
-    // Set up directory watcher if requested
     if (watch) {
       this.watchDirectory(dirPath, recursive);
     }
@@ -343,60 +393,7 @@ class RAGService extends EventEmitter {
     try {
       item.status = 'processing';
       this.emit('ingestion-update', { type: 'processing', item });
-
-      const filePath = item.filePath;
-      const fileId = this.getFileId(filePath);
-      
-      // Check if document exists
-      const existingDoc = this.vectorStore.getDocument(fileId);
-      
-      // Process file
-      const { content, metadata } = await this.documentProcessor.processFile(filePath);
-      
-      // Get chunking settings from settings
-      const chunkSize = this.settings.chunkSize || 1000;
-      const chunkOverlap = this.settings.chunkOverlap || 200;
-      const minChunkChars = this.settings.minChunkChars || 0;
-      const minChunkTokens = this.settings.minChunkTokens || 0;
-      const maxChunksPerDocument = this.settings.maxChunksPerDocument || 0;
-      
-      // Chunk content
-      const chunks = await this.documentProcessor.chunkContent(
-        content, 
-        metadata, 
-        chunkSize, 
-        chunkOverlap,
-        minChunkChars,
-        minChunkTokens,
-        maxChunksPerDocument
-      );
-      
-      // Update document in vector store
-      this.vectorStore.addDocument({
-        id: fileId,
-        filePath,
-        fileName: path.basename(filePath),
-        fileType: path.extname(filePath).toLowerCase(),
-        fileSize: metadata.fileSize,
-        ingestedAt: existingDoc ? existingDoc.ingested_at : Date.now(),
-        status: 'processing'
-      });
-
-      // Delete old chunks
-      this.vectorStore.deleteDocumentChunks(fileId);
-
-      // Add new chunks with document ID
-      const chunksWithDocId = chunks.map(chunk => ({
-        ...chunk,
-        documentId: fileId,
-        createdAt: Date.now()
-      }));
-
-      this.vectorStore.addChunks(chunksWithDocId);
-
-      // Update document status
-      this.vectorStore.updateDocumentStatus(fileId, 'completed');
-
+      await this._ingestFileIntoVectorStore(this.vectorStore, item.filePath);
       item.status = 'completed';
       this.emit('ingestion-update', { type: 'completed', item });
     } catch (error) {
@@ -837,6 +834,8 @@ class RAGService extends EventEmitter {
 
   async search(query, limit = 10, algorithm = 'hybrid', options = {}) {
     const webSearch = options.webSearch || false;
+    /** When set, corpus search reads this store instead of this.vectorStore (same process; caller must close if ephemeral). */
+    const corpusStore = options.corpusVectorStore || this.vectorStore;
     const searchWarnings = [];
     const searchErrors = [];
     const profiler = this.createSearchProfiler(`Search:${algorithm}`);
@@ -883,12 +882,12 @@ class RAGService extends EventEmitter {
     }
 
     // Check chunk count to decide if we should use streaming
-    const chunkCount = this.vectorStore.getChunksCount();
+    const chunkCount = corpusStore.getChunksCount();
     profiler?.mark(`chunk-count:${chunkCount}`);
     const useStreaming = chunkCount > 5000; // Use streaming for large datasets
     
     // Get document info for time range filtering
-    const documents = this.vectorStore.getDocuments();
+    const documents = corpusStore.getDocuments();
     const docMap = new Map(documents.map(doc => [doc.id, doc]));
     profiler?.mark('documents-loaded');
     
@@ -898,10 +897,10 @@ class RAGService extends EventEmitter {
       // Only load embeddings if needed for vector/hybrid search
       if (algorithm === 'vector' || algorithm === 'hybrid') {
         // Need embeddings for vector search
-        allChunks = this.vectorStore.getAllChunks(true);
+        allChunks = corpusStore.getAllChunks(true);
       } else {
         // Text-based search (BM25, TF-IDF) doesn't need embeddings
-        allChunks = this.vectorStore.getAllChunksWithoutEmbeddings();
+        allChunks = corpusStore.getAllChunksWithoutEmbeddings();
       }
     }
 
@@ -951,7 +950,7 @@ class RAGService extends EventEmitter {
         timeDecayHalfLifeDays
       },
       docMap,
-      useStreaming ? this.vectorStore : null
+      useStreaming ? corpusStore : null
     );
     profiler?.mark('search-service');
 
@@ -972,7 +971,8 @@ class RAGService extends EventEmitter {
           // Generate embeddings for web chunks on the fly
           for (const chunk of webChunks) {
             try {
-              const output = await this.embeddingModel(chunk.content);
+              const embedText = getChunkSearchText(chunk);
+              const output = await this.embeddingModel(embedText);
               chunk.embedding = Array.from(output.data);
               const normalizeEmbeddings = this.settings.normalizeEmbeddings !== false;
               if (normalizeEmbeddings) {
@@ -980,7 +980,7 @@ class RAGService extends EventEmitter {
                 if (norm > 0) chunk.embedding = chunk.embedding.map(v => v / norm);
               }
             } catch (_) {
-              chunk.embedding = this.documentProcessor.simpleEmbedding(chunk.content);
+              chunk.embedding = this.documentProcessor.simpleEmbedding(getChunkSearchText(chunk));
             }
           }
           webVector = this.searchService.searchVector(queryEmbedding, webChunks, webChunks.length);
@@ -1038,7 +1038,7 @@ class RAGService extends EventEmitter {
       const finalResults = mergedResults.map(result => {
         const doc = docMap.get(result.document_id);
         if (returnFullDocs && doc) {
-          const docChunks = this.vectorStore.getDocumentChunks(result.document_id);
+          const docChunks = corpusStore.getDocumentChunks(result.document_id);
           return {
             documentId: result.document_id,
             content: docChunks.map(c => c.content).join('\n\n'),
@@ -1085,7 +1085,7 @@ class RAGService extends EventEmitter {
       const isWeb = result.metadata?.source === 'web';
       const doc = isWeb ? null : docMap.get(result.document_id);
       if (!isWeb && returnFullDocs && doc) {
-        const docChunks = this.vectorStore.getDocumentChunks(result.document_id);
+        const docChunks = corpusStore.getDocumentChunks(result.document_id);
         return {
           chunkId: result.id,
           documentId: result.document_id,

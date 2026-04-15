@@ -113,6 +113,48 @@ function migrateLegacySettingsJson(legacyPath, appPath, namespacePath) {
   }
 }
 
+/** Defaults merged with on-disk settings (kept in sync with RAGService expectations). */
+function getDefaultSettings() {
+  return {
+    files: [],
+    directories: [],
+    mruSearches: [],
+    splitterPosition: 250,
+    chunkSize: 1000,
+    chunkOverlap: 200,
+    retrievalTopK: 10,
+    retrievalScoreThreshold: 0,
+    retrievalMaxChunksPerDoc: 0,
+    retrievalGroupByDoc: false,
+    retrievalReturnFullDocs: false,
+    retrievalMaxContextTokens: 0,
+    searchProfiling: false,
+    minimizeToTray: false,
+    webSearchEnabled: false,
+    webSearchApiKey: '',
+    webSearchCx: '',
+    webSearchMaxResults: 5,
+    webSearchSafeSearch: 'off',
+    webSearchTimeoutMs: 10000,
+    webSearchFetchPages: true,
+    webSearchFetchMaxBytes: 1048576,
+    webSearchPageFetchTimeoutMs: 8000
+  };
+}
+
+/**
+ * Read merged app + namespace settings from disk without constructing RAGService
+ * (avoids blocking the renderer on heavy service startup).
+ */
+function readMergedSettingsFromDisk(dataDir, appSettingsPath) {
+  const legacyPath = path.join(dataDir, 'settings.json');
+  const namespacePath = path.join(dataDir, 'namespace.json');
+  migrateLegacySettingsJson(legacyPath, appSettingsPath, namespacePath);
+  const appLayer = readJsonObject(appSettingsPath);
+  const namespaceLayer = readJsonObject(namespacePath);
+  return mergeSettingsLayers(getDefaultSettings(), appLayer, namespaceLayer);
+}
+
 module.exports = {
   NAMESPACE_ONLY_KEYS,
   splitSettingsForPersist,
@@ -121,5 +163,7 @@ module.exports = {
   patchAppSettings,
   writeAppAndNamespace,
   mergeWindowStateFileIntoAppSettings,
-  migrateLegacySettingsJson
+  migrateLegacySettingsJson,
+  getDefaultSettings,
+  readMergedSettingsFromDisk
 };

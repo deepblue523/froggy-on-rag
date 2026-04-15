@@ -55,26 +55,30 @@ class WebSearchService {
   /**
    * Fetch results from Google Custom Search JSON API.
    * Returns raw items array from the API response.
+   * @param {string} query
+   * @param {{ maxResults?: number }} [options] When set, caps `num` for this request only (API max 10).
    */
-  async fetchResults(query) {
+  async fetchResults(query, options = {}) {
     if (!this.isAvailable()) {
       throw new Error('Web search is not configured. Set API key and Search Engine ID in Settings > Web Search.');
     }
+
+    const cap = Number.isFinite(options.maxResults) ? options.maxResults : this.maxResults;
+    const num = Math.min(Math.max(1, Math.floor(cap)), 10);
 
     const params = new URLSearchParams({
       key: this.apiKey,
       cx: this.cx,
       q: query,
-      num: String(Math.min(this.maxResults, 10)),
+      num: String(num),
       safe: this.safeSearch
     });
 
     const url = `https://www.googleapis.com/customsearch/v1?${params.toString()}`;
 
-    const num = String(Math.min(this.maxResults, 10));
     webSearchDebug('Custom Search API request', {
       q: query,
-      num,
+      num: String(num),
       safe: this.safeSearch,
       cx: this.cx,
       timeoutMs: this.timeoutMs
@@ -241,14 +245,16 @@ class WebSearchService {
    * text) is converted to plain text, then split with the same size/overlap
    * as local documents. Otherwise title + snippet are chunked only.
    */
-  async searchAndChunk(query, chunkSize = 1000, chunkOverlap = 200) {
+  async searchAndChunk(query, chunkSize = 1000, chunkOverlap = 200, opts = {}) {
     webSearchDebug('searchAndChunk start', {
       queryPreview: query.length > 120 ? `${query.slice(0, 120)}…` : query,
       chunkSize,
       chunkOverlap,
       fetchPages: this.fetchPages
     });
-    const items = await this.fetchResults(query);
+    const items = await this.fetchResults(query, {
+      maxResults: Number.isFinite(opts.maxResults) ? opts.maxResults : undefined
+    });
     const fetchPages = this.fetchPages;
 
     const enriched = await Promise.all(

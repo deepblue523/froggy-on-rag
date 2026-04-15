@@ -129,7 +129,6 @@ async function runStdioMode() {
 
 async function runCLIToolMode(args) {
   try {
-    // Initialize services
     const ragService = new RAGService(dataDir);
     const mcpService = new MCPService(ragService);
     
@@ -150,7 +149,7 @@ async function runCLIToolMode(args) {
           console.error('Usage: call <tool-name> [--arg key=value] ...');
           process.exit(1);
         }
-        await callTool(mcpService, args.slice(1));
+        await callTool(mcpService, ragService, args.slice(1));
         break;
         
       case 'search':
@@ -162,7 +161,7 @@ async function runCLIToolMode(args) {
         break;
         
       case 'stats':
-        await callStatsTool(mcpService);
+        await callStatsTool(ragService);
         break;
         
       case 'help':
@@ -190,10 +189,17 @@ async function listTools(mcpService) {
   console.log(JSON.stringify({ tools }, null, 2));
 }
 
-async function callTool(mcpService, args) {
-  const toolName = args[0];
+async function callTool(mcpService, ragService, args) {
+  let toolName = args[0];
   const params = {};
-  
+
+  if (toolName === 'search') {
+    toolName = 'search_corpus';
+  }
+  if (toolName === 'get_documents') {
+    toolName = 'list_documents';
+  }
+
   // Parse arguments in format: --arg key=value or --key value
   for (let i = 1; i < args.length; i++) {
     let key, value;
@@ -219,7 +225,52 @@ async function callTool(mcpService, args) {
       params[key] = value;
     }
   }
-  
+
+  if (params.limit != null && params.topK == null) {
+    params.topK = params.limit;
+    delete params.limit;
+  }
+
+  if (toolName === 'get_document_chunks') {
+    if (!params.documentId) {
+      console.error('get_document_chunks requires documentId');
+      process.exit(1);
+    }
+    const chunks = ragService.getDocumentChunks(params.documentId);
+    console.log(JSON.stringify({ chunks }, null, 2));
+    return;
+  }
+
+  if (toolName === 'get_stats') {
+    const stats = ragService.getVectorStoreStats();
+    console.log(JSON.stringify({ stats }, null, 2));
+    return;
+  }
+
+  if (toolName === 'ingest_file') {
+    if (!params.filePath) {
+      console.error('ingest_file requires filePath');
+      process.exit(1);
+    }
+    const result = await ragService.ingestFile(params.filePath, params.watch || false);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (toolName === 'ingest_directory') {
+    if (!params.dirPath) {
+      console.error('ingest_directory requires dirPath');
+      process.exit(1);
+    }
+    const result = await ragService.ingestDirectory(
+      params.dirPath,
+      params.recursive || false,
+      params.watch || false
+    );
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   const result = await mcpService.callTool(toolName, params);
   console.log(JSON.stringify(result, null, 2));
 }
@@ -230,21 +281,35 @@ async function callSearchTool(mcpService, args) {
   
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--limit' && i + 1 < args.length) {
-      params.limit = parseInt(args[++i], 10);
+      params.topK = parseInt(args[++i], 10);
     } else if (args[i] === '--algorithm' && i + 1 < args.length) {
       params.algorithm = args[++i];
     } else if (args[i] === '--web') {
       params.webSearch = true;
     }
   }
-  
-  const result = await mcpService.callTool('search', params);
+
+  const algorithm = params.algorithm;
+  delete params.algorithm;
+  if (algorithm) {
+    params.filters = { ...(params.filters || {}), algorithm };
+  }
+
+  if (params.webSearch) {
+    const { webSearch, ...rest } = params;
+    void webSearch;
+    const result = await mcpService.callTool('web_search', { query: rest.query, maxResults: rest.topK || 5 });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const result = await mcpService.callTool('search_corpus', params);
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function callStatsTool(mcpService) {
-  const result = await mcpService.callTool('get_stats', {});
-  console.log(JSON.stringify(result, null, 2));
+async function callStatsTool(ragService) {
+  const stats = ragService.getVectorStoreStats();
+  console.log(JSON.stringify({ stats }, null, 2));
 }
 
 function printHelp() {
@@ -279,8 +344,11 @@ More examples:
   # List all tools
   node src/cli/mcp-cli.js tools list
 
-  # Call search tool
-  node src/cli/mcp-cli.js call search --query "example query" --limit 5
+  # Call vector search (MCP tool search_corpus)
+  node src/cli/mcp-cli.js call search_corpus --query "example query" --topK 5
+
+  # Shorthand: call search maps to search_corpus; --web uses web_search tool
+  node src/cli/mcp-cli.js call search --query "example query" --topK 5
 
   # Search directly
   node src/cli/mcp-cli.js search "example query" --limit 10
@@ -288,7 +356,7 @@ More examples:
   # Get statistics
   node src/cli/mcp-cli.js stats
 
-  # Ingest a file
+  # Ingest a file (uses local RAG service, not MCP tools)
   node src/cli/mcp-cli.js call ingest_file --filePath "/path/to/file.pdf"
 
 Modes:
