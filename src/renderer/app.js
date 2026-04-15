@@ -175,18 +175,25 @@ function setUpdateRestartControlsEnabled(enabled) {
   if (bannerBtn) bannerBtn.disabled = !enabled;
 }
 
+function setSettingsUpdateStatus(text) {
+  const main = document.getElementById('settings-update-status');
+  const general = document.getElementById('settings-update-status-general');
+  if (main) main.textContent = text;
+  if (general) general.textContent = text;
+}
+
 async function loadUpdatesSettingsPanel() {
   if (!window.electronAPI?.getAutoUpdateEnabled) return;
   const enabled = await window.electronAPI.getAutoUpdateEnabled();
   const devNote = document.getElementById('settings-update-dev-note');
   if (devNote) devNote.style.display = enabled ? 'none' : 'block';
-  const checkBtn = document.getElementById('settings-check-updates-btn');
+  document.querySelectorAll('.settings-check-updates-trigger').forEach((btn) => {
+    btn.disabled = !enabled;
+  });
   const restartBtn = document.getElementById('settings-update-restart-btn');
-  if (checkBtn) checkBtn.disabled = !enabled;
   if (restartBtn) restartBtn.disabled = !enabled || !pendingUpdateVersion;
-  const statusEl = document.getElementById('settings-update-status');
-  if (statusEl && pendingUpdateVersion && enabled) {
-    statusEl.textContent = `Version ${pendingUpdateVersion} is downloaded. Restart to apply.`;
+  if (pendingUpdateVersion && enabled) {
+    setSettingsUpdateStatus(`Version ${pendingUpdateVersion} is downloaded. Restart to apply.`);
   }
 }
 
@@ -194,14 +201,12 @@ function setupAutoUpdateUi() {
   if (!window.electronAPI?.checkForUpdates || autoUpdateUiInitialized) return;
   autoUpdateUiInitialized = true;
 
-  const statusEl = () => document.getElementById('settings-update-status');
   const notesEl = () => document.getElementById('settings-update-notes');
 
   window.electronAPI.onUpdateAvailable((data) => {
     pendingUpdateVersion = null;
     setUpdateRestartControlsEnabled(false);
-    const s = statusEl();
-    if (s) s.textContent = `Update available: v${data.version}. Downloading…`;
+    setSettingsUpdateStatus(`Update available: v${data.version}. Downloading…`);
     const n = notesEl();
     if (n) {
       const plain = stripReleaseNotes(data.releaseNotes);
@@ -223,42 +228,39 @@ function setupAutoUpdateUi() {
     pendingUpdateVersion = data.version;
     setUpdatesDownloadProgress(false);
     setUpdateRestartControlsEnabled(true);
-    const s = statusEl();
-    if (s) s.textContent = `Version ${data.version} is ready. Restart to install.`;
+    setSettingsUpdateStatus(`Version ${data.version} is ready. Restart to install.`);
     setUpdateReadyBanner(true, data.version);
   });
 
   window.electronAPI.onUpdateNotAvailable(() => {
     if (!pendingUpdateVersion) {
-      const s = statusEl();
-      if (s) s.textContent = 'You are on the latest version.';
+      setSettingsUpdateStatus('You are on the latest version.');
     }
     setUpdatesDownloadProgress(false);
   });
 
   window.electronAPI.onUpdateError((err) => {
-    const s = statusEl();
-    if (s) s.textContent = typeof err === 'string' ? err : 'Update check failed.';
+    setSettingsUpdateStatus(typeof err === 'string' ? err : 'Update check failed.');
     setUpdatesDownloadProgress(false);
   });
 
-  const checkBtn = document.getElementById('settings-check-updates-btn');
-  if (checkBtn) {
-    checkBtn.addEventListener('click', async () => {
-      const enabled = await window.electronAPI.getAutoUpdateEnabled();
-      if (!enabled) return;
-      const s = statusEl();
-      if (s) s.textContent = 'Checking for updates…';
-      const n = notesEl();
-      if (n) {
-        n.style.display = 'none';
-        n.textContent = '';
-      }
-      setUpdatesDownloadProgress(false);
-      const r = await window.electronAPI.checkForUpdates();
-      if (!r.success && s) s.textContent = r.error || 'Check failed.';
-    });
+  async function runSettingsCheckForUpdates() {
+    const enabled = await window.electronAPI.getAutoUpdateEnabled();
+    if (!enabled) return;
+    setSettingsUpdateStatus('Checking for updates…');
+    const n = notesEl();
+    if (n) {
+      n.style.display = 'none';
+      n.textContent = '';
+    }
+    setUpdatesDownloadProgress(false);
+    const r = await window.electronAPI.checkForUpdates();
+    if (!r.success) setSettingsUpdateStatus(r.error || 'Check failed.');
   }
+
+  document.querySelectorAll('.settings-check-updates-trigger').forEach((btn) => {
+    btn.addEventListener('click', () => void runSettingsCheckForUpdates());
+  });
 
   const restartSettings = document.getElementById('settings-update-restart-btn');
   if (restartSettings) {
@@ -550,7 +552,7 @@ function setupEventListeners() {
 
   setupAutoUpdateUi();
 
-  // Regenerate vector store
+  // Rebuild vector store
   const regenerateVectorStoreBtn = document.getElementById('regenerate-vector-store-btn');
   if (regenerateVectorStoreBtn) {
     regenerateVectorStoreBtn.addEventListener('click', async () => {
@@ -2738,7 +2740,7 @@ async function regenerateVectorStore() {
     alert(`Error regenerating vector store: ${error.message}`);
     
     // Reset button on error
-    btn.textContent = 'Regenerate Vector Store';
+    btn.textContent = 'Rebuild Vector Store';
     btn.style.background = '';
     btn.disabled = false;
   }

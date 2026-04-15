@@ -135,7 +135,7 @@
         <div class="canvas" id="vector-store-canvas" style="display: none;">
           <h2>Vector Store</h2>
           <div style="margin-bottom: 20px; padding: 15px; background: #f5f5f5; border-radius: 4px; border: 1px solid #e0e0e0;">
-            <button id="regenerate-vector-store-btn" class="btn btn-danger">Regenerate Vector Store</button>
+            <button id="regenerate-vector-store-btn" class="btn btn-danger">Rebuild Vector Store</button>
             <p style="margin: 10px 0 0 0; font-size: 12px; color: #757575;">This will clear the entire vector store and re-index all files from your current files/directories settings.</p>
           </div>
           <div class="stats-bar" id="vector-store-stats"></div>
@@ -355,7 +355,10 @@
             <div style="display: flex; flex: 1; overflow: hidden;">
               <!-- Settings Sidebar -->
               <div class="settings-sidebar" style="width: 200px; border-right: 1px solid #e0e0e0; background: #f9f9f9; overflow-y: auto; flex-shrink: 0;">
-                <div class="settings-page-item active" data-settings-page="chunking" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
+                <div class="settings-page-item active" data-settings-page="general" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
+                  <span style="font-weight: 500; color: #424242;">General</span>
+                </div>
+                <div class="settings-page-item" data-settings-page="chunking" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Chunking</span>
                 </div>
                 <div class="settings-page-item" data-settings-page="retrieval" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
@@ -363,9 +366,6 @@
                 </div>
                 <div class="settings-page-item" data-settings-page="metadata-filtering" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Metadata & Filtering</span>
-                </div>
-                <div class="settings-page-item" data-settings-page="general" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
-                  <span style="font-weight: 500; color: #424242;">General</span>
                 </div>
                 <div class="settings-page-item" data-settings-page="server" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Server</span>
@@ -380,7 +380,7 @@
               <!-- Settings Content -->
               <div class="settings-content" style="flex: 1; overflow-y: auto; padding: 20px;">
                 <!-- Chunking Settings Page -->
-                <div class="settings-page" id="settings-page-chunking" style="display: block;">
+                <div class="settings-page" id="settings-page-chunking" style="display: none;">
                   <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">Chunking Settings</h3>
                   
                   <div class="chunking-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
@@ -563,7 +563,7 @@
                 </div>
 
                 <!-- General Settings Page -->
-                <div class="settings-page" id="settings-page-general" style="display: none;">
+                <div class="settings-page" id="settings-page-general" style="display: block;">
                   <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">General Settings</h3>
                   
                   <div class="general-settings-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
@@ -577,6 +577,15 @@
                     <p style="margin: 0; font-size: 12px; color: #757575; line-height: 1.5;">
                       When enabled, minimizing or closing the window will hide it to the system tray instead of closing the application. You can restore the window by clicking the tray icon.
                     </p>
+                  </div>
+
+                  <div class="general-settings-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">App updates</h4>
+                    <p style="margin: 0 0 12px 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      Check GitHub Releases for a newer version. Download progress and release notes also appear on the <strong>Updates</strong> tab.
+                    </p>
+                    <button type="button" class="btn btn-primary settings-check-updates-trigger" id="settings-check-updates-general-btn">Check for updates</button>
+                    <p id="settings-update-status-general" style="margin: 12px 0 0 0; font-size: 14px; color: #616161; min-height: 1.25em;"></p>
                   </div>
 
                 </div>
@@ -794,7 +803,7 @@
                     <p style="margin: 0; font-size: 13px; color: #757575;">Publish installers with <code style="font-size: 12px;">npm run build:publish</code> (requires <code style="font-size: 12px;">GH_TOKEN</code> or <code style="font-size: 12px;">GITHUB_TOKEN</code> for uploads).</p>
                   </div>
                   <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px;">
-                    <button type="button" class="btn btn-primary" id="settings-check-updates-btn">Check for updates</button>
+                    <button type="button" class="btn btn-primary settings-check-updates-trigger" id="settings-check-updates-btn">Check for updates</button>
                     <button type="button" class="btn btn-secondary" id="settings-update-restart-btn" disabled>Restart to update</button>
                   </div>
                   <p id="settings-update-status" style="margin: 0 0 12px 0; font-size: 14px; color: #616161; min-height: 1.25em;"></p>
