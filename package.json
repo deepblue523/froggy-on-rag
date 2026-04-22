@@ -59,7 +59,8 @@
     },
     "files": [
       "src/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "images/Froggy RAG - Splash.png"
     ],
     "publish": {
       "provider": "github",

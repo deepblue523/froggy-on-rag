@@ -10,6 +10,7 @@ const {
   withVectorStore
 } = require('./namespace-scope');
 const { searchCorpusInNamespaces, mergeMetaWithNamespace } = require('./corpus-namespace-query');
+const { runLlmPassthrough } = require('../llm-passthrough');
 const paths = require('../../../paths');
 
 const DOCUMENT_RESOURCE_SCHEME = 'froggy-rag';
@@ -78,6 +79,32 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {}
     }
+  },
+  {
+    name: 'llm_rag_passthrough',
+    description:
+      'Run RAG retrieval over the vector store (same namespace rules as search_vector_store), inject matching chunks into the prompt, then forward to the configured LLM (Ollama or OpenAI-compatible). Requires LLM Passthrough to be enabled and configured in Froggy app settings (base URL, model, etc.). Returns the model reply plus retrieval scope and optional context preview.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'User question or instruction to answer using retrieved documents.' },
+        namespace: {
+          type: 'string',
+          description:
+            'Corpus namespace to search; omit to use server default or merged multi-corpus behavior (same as search_vector_store).'
+        },
+        topK: {
+          type: 'integer',
+          description: 'Max retrieval hits before sending to the LLM (1–100). Default: server Retrieval top K.'
+        },
+        algorithm: {
+          type: 'string',
+          enum: ['hybrid', 'bm25', 'tfidf', 'vector'],
+          description: 'Retrieval algorithm for this call (overrides LLM Passthrough settings default when set).'
+        }
+      },
+      required: ['prompt']
+    }
   }
 ];
 
@@ -110,7 +137,8 @@ class MCPToolRegistry {
       get_document: (args) => this._getDocument(args),
       get_chunk: (args) => this._getChunk(args),
       list_documents: (args) => this._listDocuments(args),
-      list_namespaces: (args) => this._listNamespaces(args)
+      list_namespaces: (args) => this._listNamespaces(args),
+      llm_rag_passthrough: (args) => this._llmRagPassthrough(args)
     };
   }
 
@@ -359,6 +387,57 @@ class MCPToolRegistry {
             : { mode: 'single', namespace: resolved.namespaces[0] }
       })
     };
+  }
+
+  async _llmRagPassthrough(args) {
+    const settings = this.ragService.getSettings();
+    if (!settings.llmPassthroughEnabled) {
+      return rpcError(
+        -32602,
+        'Invalid params',
+        'LLM Passthrough is disabled. Enable and configure it in the Froggy RAG app (Settings → LLM Passthrough), then restart or use a running server with those settings.'
+      );
+    }
+    const prompt = args.prompt;
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      return rpcError(-32602, 'Invalid params', 'prompt is required');
+    }
+    let topKArg;
+    if (args.topK !== undefined && args.topK !== null) {
+      const t = Number(args.topK);
+      if (!Number.isFinite(t) || t < 1) {
+        return rpcError(-32602, 'Invalid params', 'topK must be a positive integer');
+      }
+      topKArg = Math.min(100, Math.floor(t));
+    }
+    const algorithm =
+      typeof args.algorithm === 'string' && ['hybrid', 'bm25', 'tfidf', 'vector'].includes(args.algorithm)
+        ? args.algorithm
+        : undefined;
+    const namespace =
+      args.namespace !== undefined && args.namespace !== null && String(args.namespace).trim() !== ''
+        ? String(args.namespace).trim()
+        : undefined;
+
+    try {
+      const out = await runLlmPassthrough(this.ragService, prompt, {
+        namespace,
+        topK: topKArg,
+        algorithm
+      });
+      return {
+        result: textToolResult({
+          reply: out.reply,
+          scope: out.scope,
+          warnings: out.warnings,
+          errors: out.errors,
+          contextPreview: out.contextBlock || null
+        })
+      };
+    } catch (e) {
+      this.log('error', 'llm_rag_passthrough failed', { error: e.message });
+      return rpcError(-32000, 'LLM passthrough failed', e.message);
+    }
   }
 
   async _listNamespaces() {

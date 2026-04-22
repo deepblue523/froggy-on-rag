@@ -140,7 +140,14 @@ function getDefaultSettings() {
     retrievalReturnFullDocs: false,
     retrievalMaxContextTokens: 0,
     searchProfiling: false,
-    minimizeToTray: false
+    minimizeToTray: false,
+    llmPassthroughEnabled: false,
+    llmPassthroughProvider: 'ollama',
+    llmPassthroughBaseUrl: 'http://127.0.0.1:11434',
+    llmPassthroughApiKey: '',
+    llmPassthroughModel: '',
+    llmPassthroughTimeoutMs: 120000,
+    llmPassthroughSearchAlgorithm: 'hybrid'
   };
 }
 

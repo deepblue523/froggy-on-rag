@@ -48,6 +48,9 @@ async function reloadNamespaceContext() {
   await loadServerSettings();
   await loadMetadataFilteringSettings();
   await checkAndAutoStartServer();
+  if (currentCanvas === 'llm') {
+    void refreshLlmPassthroughPanel();
+  }
 }
 
 function openNamespacesModal() {
@@ -529,6 +532,50 @@ function setupEventListeners() {
     await performSelfTest();
   });
 
+  const llmProviderSelect = document.getElementById('settings-llm-passthrough-provider-select');
+  if (llmProviderSelect) {
+    llmProviderSelect.addEventListener('change', () => syncLlmPassthroughProviderUi());
+  }
+
+  const llmSendBtn = document.getElementById('llm-passthrough-send-btn');
+  if (llmSendBtn && window.electronAPI.llmPassthroughChat) {
+    llmSendBtn.addEventListener('click', async () => {
+      const promptEl = document.getElementById('llm-passthrough-prompt');
+      const replyEl = document.getElementById('llm-passthrough-reply');
+      const ctxEl = document.getElementById('llm-passthrough-context-preview');
+      const statusEl = document.getElementById('llm-passthrough-send-status');
+      const text = promptEl ? promptEl.value : '';
+      if (!text || !String(text).trim()) {
+        alert('Enter a test prompt.');
+        return;
+      }
+      llmSendBtn.disabled = true;
+      if (statusEl) statusEl.textContent = 'Calling model…';
+      if (replyEl) replyEl.textContent = '';
+      if (ctxEl) ctxEl.textContent = '';
+      try {
+        const res = await window.electronAPI.llmPassthroughChat(text);
+        if (!res.ok) {
+          if (replyEl) replyEl.textContent = '';
+          alert(res.error || 'LLM Passthrough failed.');
+          if (statusEl) statusEl.textContent = '';
+          return;
+        }
+        if (replyEl) replyEl.textContent = res.reply || '';
+        if (ctxEl) ctxEl.textContent = res.contextPreview || '(no chunks matched)';
+        const extra = [];
+        if (res.warnings && res.warnings.length) extra.push(`Warnings: ${res.warnings.join('; ')}`);
+        if (res.errors && res.errors.length) extra.push(`Errors: ${res.errors.join('; ')}`);
+        if (statusEl) statusEl.textContent = extra.length ? extra.join(' ') : 'Done.';
+      } catch (e) {
+        alert(e && e.message ? e.message : String(e));
+        if (statusEl) statusEl.textContent = '';
+      } finally {
+        await refreshLlmPassthroughPanel();
+      }
+    });
+  }
+
   // Settings page navigation
   setupSettingsNavigation();
 
@@ -854,6 +901,10 @@ function showCanvas(canvasName) {
       }
       // Apply saved splitter positions
       applySearchSplitterPosition();
+      break;
+    case 'llm':
+      document.getElementById('llm-canvas').style.display = 'block';
+      void refreshLlmPassthroughPanel();
       break;
     case 'server':
       document.getElementById('server-canvas').style.display = 'block';
@@ -2249,6 +2300,81 @@ async function loadServerSettings() {
   }
 }
 
+function syncLlmPassthroughProviderUi() {
+  const sel = document.getElementById('settings-llm-passthrough-provider-select');
+  const wrap = document.getElementById('settings-llm-passthrough-api-key-wrap');
+  if (!sel || !wrap) return;
+  wrap.style.display = sel.value === 'openai' ? 'block' : 'none';
+}
+
+async function loadLlmPassthroughSettings() {
+  const settings = await window.electronAPI.getSettings();
+  const enabled = document.getElementById('settings-llm-passthrough-enabled-input');
+  if (enabled) {
+    enabled.checked = settings.llmPassthroughEnabled === true;
+  }
+  const provider = document.getElementById('settings-llm-passthrough-provider-select');
+  if (provider) {
+    provider.value = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
+  }
+  const baseUrl = document.getElementById('settings-llm-passthrough-base-url-input');
+  if (baseUrl) {
+    baseUrl.value =
+      settings.llmPassthroughBaseUrl != null && settings.llmPassthroughBaseUrl !== ''
+        ? settings.llmPassthroughBaseUrl
+        : 'http://127.0.0.1:11434';
+  }
+  const model = document.getElementById('settings-llm-passthrough-model-input');
+  if (model) {
+    model.value = settings.llmPassthroughModel || '';
+  }
+  const apiKey = document.getElementById('settings-llm-passthrough-api-key-input');
+  if (apiKey) {
+    apiKey.value = '';
+  }
+  const timeout = document.getElementById('settings-llm-passthrough-timeout-input');
+  if (timeout) {
+    timeout.value =
+      settings.llmPassthroughTimeoutMs != null ? settings.llmPassthroughTimeoutMs : 120000;
+  }
+  const algo = document.getElementById('settings-llm-passthrough-search-algorithm-select');
+  if (algo) {
+    const a = settings.llmPassthroughSearchAlgorithm || 'hybrid';
+    algo.value = ['hybrid', 'bm25', 'tfidf', 'vector'].includes(a) ? a : 'hybrid';
+  }
+  syncLlmPassthroughProviderUi();
+}
+
+async function refreshLlmPassthroughPanel() {
+  const hint = document.getElementById('llm-passthrough-config-hint');
+  const sendBtn = document.getElementById('llm-passthrough-send-btn');
+  if (!hint || !sendBtn) return;
+  try {
+    const settings = await window.electronAPI.getSettings();
+    const on = settings.llmPassthroughEnabled === true;
+    const base = (settings.llmPassthroughBaseUrl || '').trim();
+    const model = (settings.llmPassthroughModel || '').trim();
+    const prov = settings.llmPassthroughProvider === 'openai' ? 'OpenAI-compatible' : 'Ollama';
+    if (!on) {
+      hint.textContent =
+        'LLM Passthrough is off. Open Settings → LLM Passthrough, enable it, and set base URL and model.';
+      sendBtn.disabled = true;
+      return;
+    }
+    if (!base || !model) {
+      hint.textContent =
+        'LLM Passthrough is enabled but base URL or model is missing. Complete those fields in Settings → LLM Passthrough.';
+      sendBtn.disabled = true;
+      return;
+    }
+    hint.textContent = `Ready: ${prov} at ${base}, model "${model}". Retrieval uses your Search/Retrieval settings for this namespace.`;
+    sendBtn.disabled = false;
+  } catch (e) {
+    hint.textContent = 'Could not load settings for LLM Passthrough.';
+    sendBtn.disabled = true;
+  }
+}
+
 /**
  * Read every Settings modal field into `settings` (mutates). Same validation as the old per-tab saves.
  * @returns {{ ok: true } | { ok: false, message: string }}
@@ -2422,6 +2548,60 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   }
   settings.serverPort = serverPort;
   settings.autoStartServer = autoStartServer;
+
+  const llmEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
+  const llmProviderSelect = document.getElementById('settings-llm-passthrough-provider-select');
+  const llmBaseUrlInput = document.getElementById('settings-llm-passthrough-base-url-input');
+  const llmApiKeyInput = document.getElementById('settings-llm-passthrough-api-key-input');
+  const llmModelInput = document.getElementById('settings-llm-passthrough-model-input');
+  const llmTimeoutInput = document.getElementById('settings-llm-passthrough-timeout-input');
+  const llmAlgoSelect = document.getElementById('settings-llm-passthrough-search-algorithm-select');
+  if (
+    !llmEnabledInput ||
+    !llmProviderSelect ||
+    !llmBaseUrlInput ||
+    !llmModelInput ||
+    !llmTimeoutInput ||
+    !llmAlgoSelect
+  ) {
+    return { ok: false, message: 'Settings form is missing LLM Passthrough fields.' };
+  }
+  const llmEnabled = llmEnabledInput.checked === true;
+  const llmProvider = llmProviderSelect.value === 'openai' ? 'openai' : 'ollama';
+  const llmBaseUrl = String(llmBaseUrlInput.value || '').trim();
+  const llmModel = String(llmModelInput.value || '').trim();
+  const llmTimeoutMs = parseInt(llmTimeoutInput.value, 10) || 120000;
+  const llmAlgo = llmAlgoSelect.value || 'hybrid';
+  if (!['hybrid', 'bm25', 'tfidf', 'vector'].includes(llmAlgo)) {
+    return { ok: false, message: 'Invalid LLM Passthrough search algorithm.' };
+  }
+  if (llmTimeoutMs < 5000 || llmTimeoutMs > 600000) {
+    return { ok: false, message: 'LLM Passthrough timeout must be between 5000 and 600000 ms.' };
+  }
+  if (llmEnabled) {
+    if (!llmBaseUrl) {
+      return { ok: false, message: 'LLM Passthrough base URL is required when passthrough is enabled.' };
+    }
+    const lower = llmBaseUrl.toLowerCase();
+    if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+      return { ok: false, message: 'LLM Passthrough base URL must start with http:// or https://.' };
+    }
+    if (!llmModel) {
+      return { ok: false, message: 'LLM Passthrough model is required when passthrough is enabled.' };
+    }
+  }
+  settings.llmPassthroughEnabled = llmEnabled;
+  settings.llmPassthroughProvider = llmProvider;
+  settings.llmPassthroughBaseUrl = llmBaseUrl;
+  settings.llmPassthroughModel = llmModel;
+  settings.llmPassthroughTimeoutMs = llmTimeoutMs;
+  settings.llmPassthroughSearchAlgorithm = llmAlgo;
+  if (llmApiKeyInput) {
+    const newLlmKey = String(llmApiKeyInput.value || '').trim();
+    if (newLlmKey !== '') {
+      settings.llmPassthroughApiKey = newLlmKey;
+    }
+  }
 
   return { ok: true };
 }
@@ -3179,6 +3359,7 @@ async function showSettingsModal() {
   await loadMetadataFilteringSettings();
   await loadGeneralSettings();
   await loadServerSettings();
+  await loadLlmPassthroughSettings();
   await loadUpdatesSettingsPanel();
 
   // Clean up previous event handlers

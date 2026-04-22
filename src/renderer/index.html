@@ -73,6 +73,11 @@
             <span class="tree-label">Search</span>
           </div>
           
+          <div class="tree-item" data-node="llm">
+            <span class="tree-icon">💬</span>
+            <span class="tree-label">LLM</span>
+          </div>
+          
           <div class="tree-item" data-node="server">
             <span class="tree-icon">🖥️</span>
             <span class="tree-label">Server</span>
@@ -270,6 +275,29 @@
           </div>
         </div>
 
+        <!-- LLM Passthrough test canvas -->
+        <div class="canvas" id="llm-canvas" style="display: none;">
+          <h2>LLM</h2>
+          <p style="margin: 0 0 16px 0; font-size: 14px; color: #616161; max-width: 900px;">
+            Send a test prompt through <strong>LLM Passthrough</strong>: the app runs the same retrieval as Search, injects matching chunks into the request, then forwards the augmented prompt to your configured Ollama or OpenAI-compatible endpoint. Configure it under Settings → <strong>LLM Passthrough</strong>.
+          </p>
+          <div id="llm-passthrough-config-hint" style="margin-bottom: 16px; padding: 12px 14px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; font-size: 13px; color: #5d4037;"></div>
+          <div style="margin-bottom: 12px;">
+            <label for="llm-passthrough-prompt" style="display: block; font-weight: 600; margin-bottom: 6px; color: #424242;">Test prompt</label>
+            <textarea id="llm-passthrough-prompt" rows="6" style="width: 100%; max-width: 900px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical;" placeholder="Ask something that should use your ingested documents…"></textarea>
+          </div>
+          <div style="margin-bottom: 20px;">
+            <button type="button" class="btn btn-primary" id="llm-passthrough-send-btn">Send with RAG context</button>
+            <span id="llm-passthrough-send-status" style="margin-left: 12px; font-size: 13px; color: #757575;"></span>
+          </div>
+          <h3 style="margin: 0 0 8px 0; font-size: 16px; color: #2c3e50;">Model reply</h3>
+          <div id="llm-passthrough-reply" style="min-height: 80px; max-width: 900px; padding: 14px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 4px; white-space: pre-wrap; font-size: 14px; color: #212121;"></div>
+          <details style="margin-top: 20px; max-width: 900px;">
+            <summary style="cursor: pointer; font-weight: 600; color: #424242;">Retrieved context (preview)</summary>
+            <pre id="llm-passthrough-context-preview" style="margin-top: 10px; padding: 12px; background: #f5f5f5; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow-y: auto;"></pre>
+          </details>
+        </div>
+
         <!-- Server Canvas -->
         <div class="canvas" id="server-canvas" style="display: none;">
           <h2>Server</h2>
@@ -364,6 +392,9 @@
                 </div>
                 <div class="settings-page-item" data-settings-page="server" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Server</span>
+                </div>
+                <div class="settings-page-item" data-settings-page="llm-passthrough" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
+                  <span style="font-weight: 500; color: #424242;">LLM Passthrough</span>
                 </div>
                 <div class="settings-page-item" data-settings-page="updates" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Updates</span>
@@ -685,6 +716,79 @@
 
                   <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
                     <p style="margin: 0; font-size: 13px; color: #757575;">These settings will be applied when starting the server.</p>
+                  </div>
+                </div>
+
+                <!-- LLM Passthrough Settings Page -->
+                <div class="settings-page" id="settings-page-llm-passthrough" style="display: none;">
+                  <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">LLM Passthrough</h3>
+                  <p style="margin: 0 0 20px 0; font-size: 14px; color: #616161; line-height: 1.5;">
+                    When enabled, prompts are augmented with chunks from the active namespace using the same retrieval pipeline as Search, then forwarded to <strong>Ollama</strong> (<code>/api/chat</code>) or an <strong>OpenAI-compatible</strong> server (<code>/v1/chat/completions</code>).
+                  </p>
+
+                  <div class="llm-passthrough-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Enable</h4>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <input type="checkbox" id="settings-llm-passthrough-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
+                      <label for="settings-llm-passthrough-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Enable LLM Passthrough</label>
+                    </div>
+                    <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      Use the <strong>LLM</strong> item in the sidebar to send test prompts when this is on and the endpoint is configured.
+                    </p>
+                  </div>
+
+                  <div class="llm-passthrough-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Provider</h4>
+                    <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
+                      <label style="font-weight: 500; color: #616161;">API style:</label>
+                      <select id="settings-llm-passthrough-provider-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; min-width: 200px;">
+                        <option value="ollama">Ollama (local)</option>
+                        <option value="openai">OpenAI-compatible (Bearer key)</option>
+                      </select>
+                    </div>
+                    <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      <strong>Ollama:</strong> base URL is usually <code>http://127.0.0.1:11434</code> (no path suffix). <strong>OpenAI-compatible:</strong> base URL should include <code>/v1</code>, for example <code>https://api.openai.com/v1</code> or your LM Studio / LiteLLM base.
+                    </p>
+                  </div>
+
+                  <div class="llm-passthrough-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Endpoint &amp; model</h4>
+                    <div style="display: flex; flex-direction: column; gap: 14px; max-width: 640px;">
+                      <div>
+                        <label for="settings-llm-passthrough-base-url-input" style="display: block; font-weight: 500; color: #616161; margin-bottom: 6px;">Base URL</label>
+                        <input type="text" id="settings-llm-passthrough-base-url-input" placeholder="http://127.0.0.1:11434 or https://api.openai.com/v1" style="width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                      <div id="settings-llm-passthrough-api-key-wrap">
+                        <label for="settings-llm-passthrough-api-key-input" style="display: block; font-weight: 500; color: #616161; margin-bottom: 6px;">API key (optional for some local servers)</label>
+                        <input type="password" id="settings-llm-passthrough-api-key-input" placeholder="Leave blank to keep existing key" autocomplete="off" style="width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                      <div>
+                        <label for="settings-llm-passthrough-model-input" style="display: block; font-weight: 500; color: #616161; margin-bottom: 6px;">Model</label>
+                        <input type="text" id="settings-llm-passthrough-model-input" placeholder="e.g. llama3.2 or gpt-4o-mini" style="width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="llm-passthrough-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Retrieval &amp; timeout</h4>
+                    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                      <div>
+                        <label for="settings-llm-passthrough-search-algorithm-select" style="font-weight: 500; color: #616161; margin-right: 8px;">Search algorithm</label>
+                        <select id="settings-llm-passthrough-search-algorithm-select" style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                          <option value="hybrid">Hybrid (BM25 + Vector)</option>
+                          <option value="bm25">BM25</option>
+                          <option value="tfidf">TF-IDF</option>
+                          <option value="vector">Vector Similarity</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label for="settings-llm-passthrough-timeout-input" style="font-weight: 500; color: #616161; margin-right: 8px;">Request timeout (ms)</label>
+                        <input type="number" id="settings-llm-passthrough-timeout-input" min="5000" max="600000" step="1000" value="120000" style="width: 110px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                    </div>
+                    <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well.
+                    </p>
                   </div>
                 </div>
 

@@ -9,6 +9,18 @@ const appVersion = packageJson.version;
 const paths = require('../paths');
 const { readJsonObject, patchAppSettings, readMergedSettingsFromDisk } = require('../settings-files');
 
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+}
+
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindowFromTray();
+  }
+});
+
 paths.ensureUserDataLayout();
 let currentNamespaceName = paths.resolveInitialNamespaceName();
 let dataDir = paths.getDataDirForNamespace(currentNamespaceName);
@@ -20,6 +32,7 @@ let dataDir = paths.getDataDirForNamespace(currentNamespaceName);
 }
 
 let mainWindow;
+let splashWindow = null;
 /** True after `before-quit` so window `close` can proceed (tray quit, app menu exit, etc.). */
 let isAppQuitting = false;
 let tray = null;
@@ -198,6 +211,9 @@ function showMainWindowFromTray() {
   if (process.platform === 'win32' || process.platform === 'linux') {
     mainWindow.setSkipTaskbar(false);
   }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
   if (!mainWindow.isVisible()) {
     mainWindow.show();
   }
@@ -252,6 +268,81 @@ function hideWindowToTray() {
   mainWindow.hide();
 }
 
+function resolveSplashImagePath() {
+  const relative = path.join('images', 'Froggy RAG - Splash.png');
+  const fromApp = path.join(app.getAppPath(), relative);
+  if (fs.existsSync(fromApp)) {
+    return fromApp;
+  }
+  return path.join(__dirname, '..', '..', relative);
+}
+
+function getSplashWindowSize() {
+  const splashPath = resolveSplashImagePath();
+  const img = nativeImage.createFromPath(splashPath);
+  if (img.isEmpty()) {
+    return { width: 720, height: 480 };
+  }
+  const { width: iw, height: ih } = img.getSize();
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  const maxW = Math.floor(workAreaSize.width * 0.92);
+  const maxH = Math.floor(workAreaSize.height * 0.92);
+  let w = iw;
+  let h = ih;
+  if (w > maxW || h > maxH) {
+    const scale = Math.min(maxW / w, maxH / h, 1);
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
+  }
+  return { width: w, height: h };
+}
+
+function destroySplashWindow() {
+  if (!splashWindow || splashWindow.isDestroyed()) {
+    splashWindow = null;
+    return;
+  }
+  try {
+    splashWindow.destroy();
+  } catch (_) {
+    /* ignore */
+  }
+  splashWindow = null;
+}
+
+function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    return;
+  }
+  const { width, height } = getSplashWindowSize();
+  splashWindow = new BrowserWindow({
+    width,
+    height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    center: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    backgroundColor: '#0a0a0a',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  });
+  splashWindow.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html'), {
+    query: { version: appVersion }
+  });
+  splashWindow.once('ready-to-show', () => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.show();
+    }
+  });
+}
+
 function createWindow() {
   // Get saved window state or use defaults
   const savedState = getWindowState();
@@ -278,6 +369,7 @@ function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
+    destroySplashWindow();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
     }
@@ -450,6 +542,7 @@ ipcMain.handle('install-update', async () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true;
+  destroySplashWindow();
   destroyTray();
 });
 
@@ -459,7 +552,7 @@ app.whenReady().then(() => {
   // Register IPC handlers with null refs so renderer calls can wait for services
   require('./ipc-handlers')(ipcMain, null, null, () => dataDir);
 
-  // Show window immediately so the app feels responsive
+  createSplashWindow();
   createWindow();
 
   // Defer service init so the first paint can show the loading screen, then run in background
@@ -471,6 +564,7 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+      createSplashWindow();
       createWindow();
     } else if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       showMainWindowFromTray();

@@ -155,6 +155,23 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     return await ragServiceRef.search(query, limit, algorithm, options);
   });
 
+  ipcMain.handle('llm-passthrough-chat', async (_, prompt) => {
+    await waitForServices();
+    try {
+      const { runLlmPassthrough } = require('./services/llm-passthrough');
+      const out = await runLlmPassthrough(ragServiceRef, prompt);
+      return {
+        ok: true,
+        reply: out.reply,
+        contextPreview: out.contextBlock,
+        warnings: out.warnings,
+        errors: out.errors
+      };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
   // MCP Server handlers
   ipcMain.handle('start-mcp-server', async (_, port = 3000) => {
     await waitForServices();

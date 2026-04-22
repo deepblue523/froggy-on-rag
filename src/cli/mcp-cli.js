@@ -199,6 +199,9 @@ async function callTool(mcpService, ragService, args) {
   if (toolName === 'get_documents') {
     toolName = 'list_documents';
   }
+  if (toolName === 'passthrough' || toolName === 'llm_passthrough') {
+    toolName = 'llm_rag_passthrough';
+  }
 
   // Parse arguments in format: --arg key=value or --key value
   for (let i = 1; i < args.length; i++) {
@@ -336,6 +339,9 @@ More examples:
 
   # Call vector search (MCP tool search_vector_store)
   node src/cli/mcp-cli.js call search_vector_store --query "example query" --topK 5
+
+  # RAG + configured LLM (MCP tool llm_rag_passthrough; alias: passthrough)
+  node src/cli/mcp-cli.js call llm_rag_passthrough --prompt "Summarize the policy" --topK 8
 
   # Shorthand: call search maps to search_vector_store
   node src/cli/mcp-cli.js call search --query "example query" --topK 5

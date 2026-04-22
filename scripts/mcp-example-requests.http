@@ -5,7 +5,7 @@
 # 1. GET  {{base}}/health  → 200, { "status": "ok", ... }
 # 2. POST {{base}}/mcp     → initialize (below) → result with protocolVersion, serverInfo, instructions
 # 3. POST {{base}}/mcp     → notifications/initialized → 204 No Content
-# 4. POST {{base}}/mcp     → tools/list → result.tools includes search_vector_store, …
+# 4. POST {{base}}/mcp     → tools/list → result.tools includes search_vector_store, llm_rag_passthrough, …
 # 5. POST {{base}}/mcp     → tools/call search_vector_store (below) → result.content[0].text JSON
 # 6. POST {{base}}/mcp     → tools/call list_namespaces → namespaces + activeNamespace
 # Admin REST (not MCP): same paths under /admin and /store. Optional query: ?namespace=<corpusName>
@@ -89,6 +89,24 @@ Content-Type: application/json
     }
   },
   "id": 3b
+}
+
+### JSON-RPC: tools/call — llm_rag_passthrough (requires LLM Passthrough enabled in app settings)
+POST {{base}}/mcp
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "llm_rag_passthrough",
+    "arguments": {
+      "prompt": "What topics are covered in the ingested documents?",
+      "topK": 8,
+      "algorithm": "hybrid"
+    }
+  },
+  "id": 3c
 }
 
 ### JSON-RPC: tools/call — list_namespaces
