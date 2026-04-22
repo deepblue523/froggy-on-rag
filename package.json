@@ -9,6 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "cross-env NODE_OPTIONS=--max-old-space-size=8192 electron . --dev",
+    "clean:dist": "node scripts/clean-dist.js",
     "build": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
     "build:all": "electron-builder",
     "build:publish": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish always",
@@ -57,6 +58,7 @@
     "directories": {
       "output": "dist"
     },
+    "npmRebuild": false,
     "files": [
       "src/**/*",
       "node_modules/**/*",
