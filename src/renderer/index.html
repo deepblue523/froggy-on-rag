@@ -310,6 +310,7 @@
               <button class="btn btn-danger" id="stop-server-btn" disabled>Stop Server</button>
               <button class="btn btn-secondary" id="self-test-btn" disabled>Self Test</button>
             </div>
+            <div id="inbound-passthrough-status" style="margin-top: 12px; font-size: 13px; color: #424242; white-space: pre-wrap; line-height: 1.45;"></div>
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; font-size: 13px; color: #757575;">
               <p style="margin: 0;">Configure server settings (port, auto-start) in the <strong>Settings</strong> menu (⚙️).</p>
             </div>
@@ -395,6 +396,9 @@
                 </div>
                 <div class="settings-page-item" data-settings-page="llm-passthrough" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">LLM Passthrough</span>
+                </div>
+                <div class="settings-page-item" data-settings-page="passthrough" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
+                  <span style="font-weight: 500; color: #424242;">Passthrough</span>
                 </div>
                 <div class="settings-page-item" data-settings-page="updates" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e0e0e0; transition: background 0.2s;">
                   <span style="font-weight: 500; color: #424242;">Updates</span>
@@ -789,6 +793,55 @@
                     <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575; line-height: 1.5;">
                       Chunk count and ranking follow your <strong>Retrieval</strong> and <strong>Metadata &amp; Filtering</strong> settings. Top K and score thresholds apply here as well.
                     </p>
+                  </div>
+                </div>
+
+                <!-- Inbound Passthrough (HTTP) Settings Page -->
+                <div class="settings-page" id="settings-page-passthrough" style="display: none;">
+                  <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #2c3e50;">Passthrough</h3>
+                  <p style="margin: 0 0 20px 0; font-size: 14px; color: #616161; line-height: 1.5;">
+                    Listen on extra local ports using the same wire formats as <strong>Ollama</strong> (<code>POST /api/chat</code>) or <strong>OpenAI</strong> (<code>POST /v1/chat/completions</code>). Each request is augmented with RAG from the active corpus (same rules as Search), then forwarded non‑streamingly to the upstream configured under <strong>LLM Passthrough</strong>. Clients can point at Froggy instead of adding an MCP tool.
+                  </p>
+
+                  <div style="padding: 20px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; margin-bottom: 20px;">
+                    <p style="margin: 0; font-size: 13px; color: #5d4037; line-height: 1.5;">
+                      Requires <strong>LLM Passthrough</strong> to be enabled with a valid upstream. Streaming requests (<code>stream: true</code>) are not supported on inbound listeners. Optional corpus scope: HTTP header <code>X-Froggy-Namespace</code> or query <code>?namespace=</code>.
+                    </p>
+                  </div>
+
+                  <div class="passthrough-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Inbound listeners</h4>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+                      <input type="checkbox" id="settings-passthrough-listen-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
+                      <label for="settings-passthrough-listen-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Enable inbound HTTP passthrough</label>
+                    </div>
+                    <p style="margin: 0 0 16px 0; font-size: 12px; color: #757575; line-height: 1.5;">
+                      Independent of the MCP server: you can run inbound passthrough while the MCP REST server is stopped. Ports must differ from the MCP server port (Settings → Server).
+                    </p>
+
+                    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center; margin-bottom: 12px;">
+                      <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="settings-passthrough-ollama-listen-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
+                        <label for="settings-passthrough-ollama-listen-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Ollama-style listener</label>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="settings-passthrough-ollama-listen-port-input" style="font-weight: 500; color: #616161;">Port</label>
+                        <input type="number" id="settings-passthrough-ollama-listen-port-input" min="1024" max="65535" step="1" value="11435" style="width: 90px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                    </div>
+                    <p style="margin: 0 0 16px 0; font-size: 12px; color: #757575;">Example base URL for clients: <code>http://127.0.0.1:&lt;port&gt;</code> — use <code>POST /api/chat</code> (same JSON as Ollama). <code>GET /api/tags</code> returns a minimal model list.</p>
+
+                    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                      <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="settings-passthrough-openai-listen-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
+                        <label for="settings-passthrough-openai-listen-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">OpenAI-compatible listener</label>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="settings-passthrough-openai-listen-port-input" style="font-weight: 500; color: #616161;">Port</label>
+                        <input type="number" id="settings-passthrough-openai-listen-port-input" min="1024" max="65535" step="1" value="18080" style="width: 90px; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+                      </div>
+                    </div>
+                    <p style="margin: 12px 0 0 0; font-size: 12px; color: #757575;">Example: <code>http://127.0.0.1:&lt;port&gt;/v1/chat/completions</code>. <code>GET /v1/models</code> lists the configured default model id.</p>
                   </div>
                 </div>
 

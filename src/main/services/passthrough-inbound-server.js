@@ -1,0 +1,269 @@
+/**
+ * Optional HTTP listeners that mimic Ollama (/api/chat) and OpenAI (/v1/chat/completions),
+ * apply RAG, and forward non-streaming requests to the configured LLM Passthrough upstream.
+ */
+
+const express = require('express');
+const { completeChatProxy } = require('./llm-passthrough');
+
+function corsMiddleware(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Froggy-Namespace');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+  } else {
+    next();
+  }
+}
+
+function readNamespaceFromReq(req) {
+  const h = req.headers['x-froggy-namespace'];
+  if (typeof h === 'string' && h.trim()) return h.trim();
+  const q = req.query && req.query.namespace;
+  if (typeof q === 'string' && q.trim()) return q.trim();
+  return undefined;
+}
+
+function openAiError(res, status, message) {
+  res.status(status).json({
+    error: {
+      message,
+      type: 'invalid_request_error',
+      param: null,
+      code: null
+    }
+  });
+}
+
+class PassthroughInboundService {
+  /**
+   * @param {*} ragService
+   * @param {(level: string, message: string, data?: object) => void} [log]
+   */
+  constructor(ragService, log) {
+    this.ragService = ragService;
+    this.log = log || (() => {});
+    /** @type {import('http').Server | null} */
+    this._ollamaServer = null;
+    /** @type {import('http').Server | null} */
+    this._openAiServer = null;
+    this._ollamaPort = null;
+    this._openAiPort = null;
+    this._ollamaError = null;
+    this._openAiError = null;
+  }
+
+  _ollamaApp() {
+    const app = express();
+    app.use(corsMiddleware);
+    app.use(express.json({ limit: '20mb' }));
+
+    app.get('/api/tags', (req, res) => {
+      try {
+        const model = this.ragService.getSettings().llmPassthroughModel || 'local';
+        res.json({
+          models: [{ name: model, model: model, modified_at: new Date().toISOString(), size: 0, digest: '' }]
+        });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
+      }
+    });
+
+    app.post('/api/chat', async (req, res) => {
+      const ns = readNamespaceFromReq(req);
+      try {
+        const out = await completeChatProxy(this.ragService, req.body || {}, {
+          namespace: ns
+        });
+        res.json(out.upstreamJson);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (e && e.code === 'STREAM_NOT_SUPPORTED') {
+          return res.status(400).json({ error: msg });
+        }
+        if (msg.includes('LLM Passthrough is disabled') || msg.includes('base URL') || msg.includes('model name')) {
+          return res.status(503).json({ error: msg });
+        }
+        this.log('error', 'Inbound Ollama /api/chat error', { error: msg });
+        res.status(400).json({ error: msg });
+      }
+    });
+
+    return app;
+  }
+
+  _openAiApp() {
+    const app = express();
+    app.use(corsMiddleware);
+    app.use(express.json({ limit: '20mb' }));
+
+    app.get('/v1/models', (req, res) => {
+      try {
+        const m = this.ragService.getSettings().llmPassthroughModel || 'default';
+        res.json({
+          object: 'list',
+          data: [
+            {
+              id: m,
+              object: 'model',
+              created: Math.floor(Date.now() / 1000),
+              owned_by: 'froggy-rag'
+            }
+          ]
+        });
+      } catch (e) {
+        res.status(500).json({
+          error: { message: e.message, type: 'api_error', code: null }
+        });
+      }
+    });
+
+    app.post('/v1/chat/completions', async (req, res) => {
+      const ns = readNamespaceFromReq(req);
+      try {
+        const out = await completeChatProxy(this.ragService, req.body || {}, {
+          namespace: ns
+        });
+        res.json(out.upstreamJson);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (e && e.code === 'STREAM_NOT_SUPPORTED') {
+          return openAiError(res, 400, msg);
+        }
+        if (msg.includes('LLM Passthrough is disabled') || msg.includes('base URL') || msg.includes('model name')) {
+          return openAiError(res, 503, msg);
+        }
+        this.log('error', 'Inbound OpenAI /v1/chat/completions error', { error: msg });
+        return openAiError(res, 400, msg);
+      }
+    });
+
+    return app;
+  }
+
+  /**
+   * @param {import('express').Express} app
+   * @param {number} port
+   * @param {string} label
+   * @returns {Promise<import('http').Server>}
+   */
+  _listen(app, port, label) {
+    return new Promise((resolve, reject) => {
+      const server = app.listen(port, () => {
+        this.log('info', `Inbound passthrough (${label}) listening on port ${port}`);
+        resolve(server);
+      });
+      server.on('error', (err) => {
+        this.log('error', `Inbound passthrough (${label}) failed to bind`, {
+          port,
+          error: err.message
+        });
+        reject(err);
+      });
+    });
+  }
+
+  async stopAll() {
+    const close = (server) =>
+      new Promise((resolve) => {
+        if (!server) return resolve();
+        server.close(() => resolve());
+      });
+    await close(this._ollamaServer);
+    await close(this._openAiServer);
+    this._ollamaServer = null;
+    this._openAiServer = null;
+    this._ollamaPort = null;
+    this._openAiPort = null;
+    this._ollamaError = null;
+    this._openAiError = null;
+  }
+
+  getStatus() {
+    const s = this.ragService.getSettings();
+    return {
+      masterEnabled: s.passthroughListenEnabled === true,
+      ollama: {
+        enabled: s.passthroughOllamaListenEnabled === true,
+        listening: this._ollamaServer !== null,
+        port: this._ollamaPort,
+        lastError: this._ollamaError
+      },
+      openai: {
+        enabled: s.passthroughOpenAiListenEnabled === true,
+        listening: this._openAiServer !== null,
+        port: this._openAiPort,
+        lastError: this._openAiError
+      }
+    };
+  }
+
+  /**
+   * Restart listeners from current ragService settings.
+   */
+  async syncFromSettings() {
+    await this.stopAll();
+    const s = this.ragService.getSettings();
+    if (!s.passthroughListenEnabled) {
+      return;
+    }
+
+    const mcpPort = s.serverPort || 3000;
+    const ollamaPort = parseInt(String(s.passthroughOllamaListenPort || 0), 10);
+    const openAiPort = parseInt(String(s.passthroughOpenAiListenPort || 0), 10);
+
+    const validListenPort = (p) => Number.isFinite(p) && p >= 1024 && p <= 65535;
+
+    const tryStart = async (kind, enabled, port, appFactory) => {
+      if (!enabled) return;
+      if (!validListenPort(port)) {
+        const msg = `Invalid ${kind} listen port (use 1024–65535).`;
+        if (kind === 'ollama') this._ollamaError = msg;
+        else this._openAiError = msg;
+        this.log('error', 'Inbound passthrough invalid port', { kind, port });
+        return;
+      }
+      if (port === mcpPort) {
+        const msg = `Port ${port} is already used by the MCP server; pick another inbound port.`;
+        if (kind === 'ollama') this._ollamaError = msg;
+        else this._openAiError = msg;
+        this.log('error', 'Inbound passthrough port conflict with MCP', { kind, port });
+        return;
+      }
+      try {
+        const server = await this._listen(appFactory(), port, kind);
+        if (kind === 'ollama') {
+          this._ollamaServer = server;
+          this._ollamaPort = port;
+        } else {
+          this._openAiServer = server;
+          this._openAiPort = port;
+        }
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (kind === 'ollama') this._ollamaError = msg;
+        else this._openAiError = msg;
+      }
+    };
+
+    if (s.passthroughOllamaListenEnabled && ollamaPort && s.passthroughOpenAiListenEnabled && openAiPort) {
+      if (ollamaPort === openAiPort) {
+        this._ollamaError = 'Ollama and OpenAI inbound ports must differ.';
+        this._openAiError = this._ollamaError;
+        this.log('error', 'Inbound passthrough duplicate ports', { port: ollamaPort });
+        return;
+      }
+    }
+
+    await tryStart('ollama', s.passthroughOllamaListenEnabled === true, ollamaPort, () => this._ollamaApp());
+    await tryStart(
+      'openai',
+      s.passthroughOpenAiListenEnabled === true,
+      openAiPort,
+      () => this._openAiApp()
+    );
+  }
+}
+
+module.exports = { PassthroughInboundService };

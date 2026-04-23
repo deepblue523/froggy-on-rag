@@ -11,6 +11,8 @@ let servicesReadyResolve = null;
 let handlersRegistered = false;
 /** Live active namespace data dir from main.js (for settings read before RAGService is constructed). */
 let getDataDirFn = null;
+/** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
+let inboundPassthroughRef = null;
 
 function waitForServices() {
   if (servicesReady && ragServiceRef && mcpServiceRef) {
@@ -24,9 +26,12 @@ function waitForServices() {
   return servicesReadyPromise;
 }
 
-module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir) {
+module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir, inboundPassthrough) {
   if (typeof getDataDir === 'function') {
     getDataDirFn = getDataDir;
+  }
+  if (arguments.length >= 5) {
+    inboundPassthroughRef = inboundPassthrough || null;
   }
   // Update service references if provided
   if (ragService && mcpService) {
@@ -185,7 +190,11 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
 
   ipcMain.handle('get-mcp-server-status', async () => {
     await waitForServices();
-    return mcpServiceRef.getStatus();
+    const base = mcpServiceRef.getStatus();
+    if (inboundPassthroughRef && typeof inboundPassthroughRef.getStatus === 'function') {
+      return { ...base, inboundPassthrough: inboundPassthroughRef.getStatus() };
+    }
+    return base;
   });
 
   ipcMain.handle('get-mcp-server-logs', async () => {
@@ -209,7 +218,15 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
 
   ipcMain.handle('save-settings', async (_, settings) => {
     await waitForServices();
-    return ragServiceRef.saveSettings(settings);
+    const out = ragServiceRef.saveSettings(settings);
+    if (inboundPassthroughRef && typeof inboundPassthroughRef.syncFromSettings === 'function') {
+      try {
+        await inboundPassthroughRef.syncFromSettings();
+      } catch (e) {
+        console.error('Inbound passthrough sync failed:', e);
+      }
+    }
+    return out;
   });
 
   ipcMain.handle('toggle-devtools', (event) => {

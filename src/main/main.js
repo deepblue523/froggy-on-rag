@@ -39,6 +39,8 @@ let tray = null;
 let mcpServer = null;
 let ragService = null;
 let mcpService = null;
+/** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
+let passthroughInbound = null;
 let updateCheckIntervalId = null;
 
 function getWindowState() {
@@ -111,13 +113,26 @@ function ensureWindowOnScreen(bounds) {
 function attachServices() {
   const { RAGService } = require('./services/rag-service');
   const { MCPService } = require('./services/mcp-service');
+  const { PassthroughInboundService } = require('./services/passthrough-inbound-server');
   ragService = new RAGService(dataDir);
   mcpService = new MCPService(ragService);
-  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir);
+  passthroughInbound = new PassthroughInboundService(ragService, (level, message, data) =>
+    mcpService.log(level, message, data)
+  );
+  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir, passthroughInbound);
+  void passthroughInbound.syncFromSettings();
 }
 
 async function destroyServices() {
-  require('./ipc-handlers')(ipcMain, null, null, () => dataDir);
+  if (passthroughInbound) {
+    try {
+      await passthroughInbound.stopAll();
+    } catch (error) {
+      console.error('Error stopping inbound passthrough:', error);
+    }
+    passthroughInbound = null;
+  }
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null);
   if (mcpService) {
     try {
       await mcpService.stop();
@@ -550,7 +565,7 @@ app.whenReady().then(() => {
   registerAutoUpdaterListeners();
 
   // Register IPC handlers with null refs so renderer calls can wait for services
-  require('./ipc-handlers')(ipcMain, null, null, () => dataDir);
+  require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null);
 
   createSplashWindow();
   createWindow();

@@ -2033,6 +2033,46 @@ async function refreshServerStatus() {
   } else {
     endpointsSection.style.display = 'none';
   }
+
+  const inboundEl = document.getElementById('inbound-passthrough-status');
+  if (inboundEl && status.inboundPassthrough) {
+    const p = status.inboundPassthrough;
+    const lines = [];
+    if (!p.masterEnabled) {
+      lines.push('Inbound LLM passthrough: off (Settings → Passthrough).');
+    } else {
+      lines.push('Inbound LLM passthrough: on (uses LLM Passthrough upstream + RAG).');
+      if (p.ollama.enabled) {
+        if (p.ollama.listening) {
+          lines.push(
+            `· Ollama-style: http://127.0.0.1:${p.ollama.port} — POST /api/chat, GET /api/tags. Optional header X-Froggy-Namespace or ?namespace=.`
+          );
+        } else {
+          lines.push(
+            `· Ollama-style: not listening (port ${p.ollama.port || '—'})${p.ollama.lastError ? ' — ' + p.ollama.lastError : ''}`
+          );
+        }
+      }
+      if (p.openai.enabled) {
+        if (p.openai.listening) {
+          lines.push(
+            `· OpenAI-compatible: http://127.0.0.1:${p.openai.port}/v1/chat/completions — GET /v1/models.`
+          );
+        } else {
+          lines.push(
+            `· OpenAI-compatible: not listening (port ${p.openai.port || '—'})${p.openai.lastError ? ' — ' + p.openai.lastError : ''}`
+          );
+        }
+      }
+      if (!p.ollama.enabled && !p.openai.enabled) {
+        lines.push('· No listener types enabled (enable Ollama and/or OpenAI-compatible above).');
+      }
+      lines.push('Streaming (stream: true) is not supported on inbound listeners.');
+    }
+    inboundEl.textContent = lines.join('\n');
+  } else if (inboundEl) {
+    inboundEl.textContent = '';
+  }
 }
 
 function setupCopyButtons() {
@@ -2345,6 +2385,32 @@ async function loadLlmPassthroughSettings() {
   syncLlmPassthroughProviderUi();
 }
 
+async function loadInboundPassthroughSettings() {
+  const settings = await window.electronAPI.getSettings();
+  const master = document.getElementById('settings-passthrough-listen-enabled-input');
+  if (master) {
+    master.checked = settings.passthroughListenEnabled === true;
+  }
+  const oEn = document.getElementById('settings-passthrough-ollama-listen-enabled-input');
+  if (oEn) {
+    oEn.checked = settings.passthroughOllamaListenEnabled === true;
+  }
+  const oPort = document.getElementById('settings-passthrough-ollama-listen-port-input');
+  if (oPort) {
+    oPort.value =
+      settings.passthroughOllamaListenPort != null ? settings.passthroughOllamaListenPort : 11435;
+  }
+  const aiEn = document.getElementById('settings-passthrough-openai-listen-enabled-input');
+  if (aiEn) {
+    aiEn.checked = settings.passthroughOpenAiListenEnabled === true;
+  }
+  const aiPort = document.getElementById('settings-passthrough-openai-listen-port-input');
+  if (aiPort) {
+    aiPort.value =
+      settings.passthroughOpenAiListenPort != null ? settings.passthroughOpenAiListenPort : 18080;
+  }
+}
+
 async function refreshLlmPassthroughPanel() {
   const hint = document.getElementById('llm-passthrough-config-hint');
   const sendBtn = document.getElementById('llm-passthrough-send-btn');
@@ -2603,6 +2669,57 @@ function applyAllSettingsModalFieldsToSettings(settings) {
     }
   }
 
+  const ptMaster = document.getElementById('settings-passthrough-listen-enabled-input');
+  const ptOllamaEn = document.getElementById('settings-passthrough-ollama-listen-enabled-input');
+  const ptOllamaPort = document.getElementById('settings-passthrough-ollama-listen-port-input');
+  const ptOpenAiEn = document.getElementById('settings-passthrough-openai-listen-enabled-input');
+  const ptOpenAiPort = document.getElementById('settings-passthrough-openai-listen-port-input');
+  if (!ptMaster || !ptOllamaEn || !ptOllamaPort || !ptOpenAiEn || !ptOpenAiPort) {
+    return { ok: false, message: 'Settings form is missing Passthrough fields.' };
+  }
+  const passthroughListenEnabled = ptMaster.checked === true;
+  const passthroughOllamaListenEnabled = ptOllamaEn.checked === true;
+  const passthroughOpenAiListenEnabled = ptOpenAiEn.checked === true;
+  const ollamaListenPort = parseInt(ptOllamaPort.value, 10) || 0;
+  const openAiListenPort = parseInt(ptOpenAiPort.value, 10) || 0;
+
+  if (passthroughListenEnabled) {
+    if (!passthroughOllamaListenEnabled && !passthroughOpenAiListenEnabled) {
+      return {
+        ok: false,
+        message: 'Inbound passthrough is on: enable at least one listener (Ollama-style or OpenAI-compatible).'
+      };
+    }
+    if (passthroughOllamaListenEnabled) {
+      if (ollamaListenPort < 1024 || ollamaListenPort > 65535) {
+        return { ok: false, message: 'Ollama inbound port must be between 1024 and 65535.' };
+      }
+      if (ollamaListenPort === serverPort) {
+        return { ok: false, message: 'Ollama inbound port cannot match the MCP server port.' };
+      }
+    }
+    if (passthroughOpenAiListenEnabled) {
+      if (openAiListenPort < 1024 || openAiListenPort > 65535) {
+        return { ok: false, message: 'OpenAI inbound port must be between 1024 and 65535.' };
+      }
+      if (openAiListenPort === serverPort) {
+        return { ok: false, message: 'OpenAI inbound port cannot match the MCP server port.' };
+      }
+    }
+    if (
+      passthroughOllamaListenEnabled &&
+      passthroughOpenAiListenEnabled &&
+      ollamaListenPort === openAiListenPort
+    ) {
+      return { ok: false, message: 'Ollama and OpenAI inbound ports must be different.' };
+    }
+  }
+  settings.passthroughListenEnabled = passthroughListenEnabled;
+  settings.passthroughOllamaListenEnabled = passthroughOllamaListenEnabled;
+  settings.passthroughOllamaListenPort = ollamaListenPort;
+  settings.passthroughOpenAiListenEnabled = passthroughOpenAiListenEnabled;
+  settings.passthroughOpenAiListenPort = openAiListenPort;
+
   return { ok: true };
 }
 
@@ -2616,6 +2733,7 @@ async function persistSettingsModal() {
     }
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
+    await refreshServerStatus();
     return true;
   } catch (e) {
     console.error('persistSettingsModal', e);
@@ -3360,6 +3478,7 @@ async function showSettingsModal() {
   await loadGeneralSettings();
   await loadServerSettings();
   await loadLlmPassthroughSettings();
+  await loadInboundPassthroughSettings();
   await loadUpdatesSettingsPanel();
 
   // Clean up previous event handlers

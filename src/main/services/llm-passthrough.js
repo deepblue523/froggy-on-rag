@@ -213,7 +213,205 @@ async function runLlmPassthrough(ragService, userPrompt, options = {}) {
   return { reply: String(reply).trim(), contextBlock, warnings, errors, scope };
 }
 
+/** @param {unknown} content */
+function messageContentToString(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const p of content) {
+      if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
+        parts.push(p.text);
+      }
+    }
+    return parts.join('\n');
+  }
+  return '';
+}
+
+/**
+ * @param {unknown[]} messages
+ * @returns {{ role: string, content: string }[]}
+ */
+function normalizeChatMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  const out = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const role = typeof m.role === 'string' ? m.role : 'user';
+    const content = messageContentToString(m.content);
+    out.push({ role, content });
+  }
+  return out;
+}
+
+/**
+ * @param {{ role: string, content: string }[]} messages
+ */
+function getRagQueryFromMessages(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && messages[i].content.trim()) {
+      return messages[i].content.trim();
+    }
+  }
+  return messages.length && messages[0].content.trim() ? messages[0].content.trim() : '';
+}
+
+/**
+ * @param {{ role: string, content: string }[]} messages
+ * @param {string} contextForModel
+ */
+function injectRagIntoMessages(messages, contextForModel) {
+  const ragBlock = [
+    'You are a helpful assistant.',
+    'Use the following excerpts from the user\'s indexed documents when they help answer the question.',
+    'If the excerpts are irrelevant, say so briefly and answer without inventing document content.',
+    '',
+    '### Retrieved context',
+    '',
+    contextForModel
+  ].join('\n');
+
+  const copy = messages.map((m) => ({ ...m, content: m.content }));
+  if (copy.length && copy[0].role === 'system') {
+    copy[0] = {
+      role: 'system',
+      content: `${ragBlock}\n\n---\n\n${copy[0].content}`
+    };
+  } else {
+    copy.unshift({ role: 'system', content: ragBlock });
+  }
+  return copy;
+}
+
+/**
+ * Full non-streaming proxy: RAG over last user turn, then forward to configured upstream. Returns upstream JSON and metadata.
+ * @param {*} ragService
+ * @param {{ messages?: unknown[], model?: string, temperature?: number, max_tokens?: number, stream?: boolean }} inboundBody
+ * @param {{ namespace?: string, topK?: number, algorithm?: string }} [options]
+ * @returns {Promise<{ upstreamJson: object, contextBlock: string, warnings: string[], errors: string[], scope?: object }>}
+ */
+async function completeChatProxy(ragService, inboundBody, options = {}) {
+  const settings = ragService.getSettings();
+  if (!settings.llmPassthroughEnabled) {
+    throw new Error('LLM Passthrough is disabled. Enable it in Settings → LLM Passthrough.');
+  }
+  const outbound = settings.llmPassthroughProvider === 'openai' ? 'openai' : 'ollama';
+  const baseUrl = trimTrailingSlash(settings.llmPassthroughBaseUrl || '');
+  const defaultModel = String(settings.llmPassthroughModel || '').trim();
+  const apiKey = String(settings.llmPassthroughApiKey || '').trim();
+  const timeoutMs =
+    Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
+      ? settings.llmPassthroughTimeoutMs
+      : 120000;
+
+  let algorithm = settings.llmPassthroughSearchAlgorithm || 'hybrid';
+  if (typeof options.algorithm === 'string' && ALLOWED_ALGORITHMS.has(options.algorithm)) {
+    algorithm = options.algorithm;
+  }
+
+  if (!baseUrl) {
+    throw new Error('LLM Passthrough base URL is required.');
+  }
+  if (!defaultModel) {
+    throw new Error('LLM Passthrough model name is required.');
+  }
+
+  if (inboundBody && inboundBody.stream === true) {
+    const e = new Error(
+      'Streaming is not supported on the inbound passthrough listener. Set stream to false.'
+    );
+    e.code = 'STREAM_NOT_SUPPORTED';
+    throw e;
+  }
+
+  const rawMessages = inboundBody && inboundBody.messages;
+  const messages = normalizeChatMessages(rawMessages);
+  if (!messages.length) {
+    throw new Error('messages array is required and must contain at least one message.');
+  }
+
+  const ragQuery = getRagQueryFromMessages(messages);
+  if (!ragQuery) {
+    throw new Error('Could not derive a user message for RAG retrieval.');
+  }
+
+  let topK = settings.retrievalTopK || 10;
+  if (options.topK !== undefined && options.topK !== null) {
+    const t = Number(options.topK);
+    if (Number.isFinite(t) && t >= 1) {
+      topK = Math.min(100, Math.floor(t));
+    }
+  } else {
+    topK = Math.min(100, Math.max(1, Math.floor(topK)));
+  }
+
+  const namespaceArg =
+    options.namespace !== undefined && options.namespace !== null && String(options.namespace).trim() !== ''
+      ? String(options.namespace).trim()
+      : undefined;
+
+  const searchOut = await searchCorpusInNamespaces(ragService, {
+    namespace: namespaceArg,
+    query: ragQuery,
+    topK,
+    algorithm
+  });
+  const warnings = Array.isArray(searchOut.warnings) ? [...searchOut.warnings] : [];
+  const errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
+  const hits = searchOut.results || [];
+  const scope = searchOut.scope;
+  const contextBlock = formatSearchHitsForContext(hits);
+  const contextForModel =
+    contextBlock ||
+    'No relevant chunks were retrieved from the knowledge base for this query. Answer using general knowledge and say that no local context was found.';
+
+  const augmented = injectRagIntoMessages(messages, contextForModel);
+  const model =
+    typeof inboundBody.model === 'string' && inboundBody.model.trim()
+      ? inboundBody.model.trim()
+      : defaultModel;
+
+  let upstreamJson;
+  if (outbound === 'ollama') {
+    const url = `${baseUrl}/api/chat`;
+    const body = {
+      model,
+      messages: augmented,
+      stream: false
+    };
+    if (inboundBody && inboundBody.options && typeof inboundBody.options === 'object') {
+      body.options = inboundBody.options;
+    }
+    upstreamJson = await postJson(url, body, {}, timeoutMs);
+  } else {
+    const url = `${baseUrl}/chat/completions`;
+    const headers = {};
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    const body = {
+      model,
+      messages: augmented,
+      stream: false,
+      temperature:
+        typeof inboundBody.temperature === 'number' && Number.isFinite(inboundBody.temperature)
+          ? inboundBody.temperature
+          : 0.7
+    };
+    if (typeof inboundBody.max_tokens === 'number' && Number.isFinite(inboundBody.max_tokens)) {
+      body.max_tokens = inboundBody.max_tokens;
+    }
+    upstreamJson = await postJson(url, body, headers, timeoutMs);
+  }
+
+  return { upstreamJson, contextBlock, warnings, errors, scope };
+}
+
 module.exports = {
   runLlmPassthrough,
-  formatSearchHitsForContext
+  completeChatProxy,
+  formatSearchHitsForContext,
+  normalizeChatMessages,
+  getRagQueryFromMessages,
+  injectRagIntoMessages
 };

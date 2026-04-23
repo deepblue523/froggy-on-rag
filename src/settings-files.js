@@ -147,7 +147,12 @@ function getDefaultSettings() {
     llmPassthroughApiKey: '',
     llmPassthroughModel: '',
     llmPassthroughTimeoutMs: 120000,
-    llmPassthroughSearchAlgorithm: 'hybrid'
+    llmPassthroughSearchAlgorithm: 'hybrid',
+    passthroughListenEnabled: false,
+    passthroughOllamaListenEnabled: false,
+    passthroughOllamaListenPort: 11435,
+    passthroughOpenAiListenEnabled: false,
+    passthroughOpenAiListenPort: 18080
   };
 }
 
