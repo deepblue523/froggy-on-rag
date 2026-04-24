@@ -1,12 +1,12 @@
 # Froggy RAG MCP
 
-A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration.
+A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration. With LLM Passthrough and optional inbound HTTP listeners enabled under Settings → Server, the app can also act as a local passthrough: it accepts Ollama-style or OpenAI-compatible chat requests, retrieves from your corpora, and injects that context into the upstream LLM call so existing HTTP clients get RAG without orchestrating MCP tools. Clients that prefer explicit retrieval can still use MCP tools such as `search_vector_store` and `list_namespaces`.
 
 ## Features
 
 ### 🔍 RAG System
 - **Vector Store**: Built on SQLite, stored in `~/froggy-rag-mcp/data`
-- **World-Class Chunking**: Supports `.docx`, `.xlsx`, `.pdf`, `.csv`, and `.txt` files
+- **World-Class Chunking**: Supports `.docx`, `.xlsx`, `.pdf`, `.csv`, `.txt`, `.html`, `.md`, `.markdown`, `.mdx`, and related formats
 - **Queue-Based Processing**: Documents are processed in a queue, allowing semi-offline ingestion and chunking
 - **Ingestion Status Tracking**: Real-time status monitoring for each document in the ingestion queue
 
@@ -20,6 +20,12 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
 - **Semantic Search**: World-class matching based on input queries and vector store
 - **MRU (Most Recently Used)**: Quick access to recent searches
 - **Chunk Inspection**: View content and metadata for retrieved chunks
+
+### 🤖 LLM Passthrough (RAG on chat completions)
+
+- **Local API surface**: With passthrough enabled, the app listens on configurable ports and proxies chat to your configured **upstream** (Ollama or OpenAI-compatible), after augmenting requests with retrieval from the active namespace or headers you send.
+- **Per-provider settings**: Separate base URL, model, and API key for Ollama vs OpenAI-style upstreams (see **Settings → Server**).
+- **Complements MCP**: MCP clients continue to use tools such as `search_vector_store`; passthrough is for HTTP clients that expect a normal **chat completions** endpoint with retrieval applied automatically.
 
 ### 🌐 MCP Server
 - **Dual Interfaces**: Both stdio and REST API interfaces
@@ -53,7 +59,7 @@ Download the latest pre-built installer from our [releases page](https://github.
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd froggy-nobs-mcp-rag
+cd froggy-rag-mcp
 ```
 
 2. Install dependencies:
@@ -88,7 +94,7 @@ This will create distributable packages in the `dist` directory using electron-b
 ## Application Structure
 
 ```
-froggy-nobs-mcp-rag/
+froggy-rag-mcp/
 ├── src/
 │   ├── main/              # Electron main process
 │   │   ├── main.js        # Main entry point
@@ -128,6 +134,8 @@ This includes:
 - **PDF**: `.pdf`
 - **CSV**: `.csv`
 - **Plain Text**: `.txt`
+- **HTML**: `.html`, `.htm`
+- **Markdown**: `.md`, `.markdown`, `.mdx`
 
 ## MCP Server
 
@@ -166,7 +174,7 @@ For Claude Desktop, add to your MCP configuration file:
   "mcpServers": {
     "froggy-rag": {
       "command": "node",
-      "args": ["path/to/froggy-nobs-mcp-rag/src/cli/mcp-cli.js"],
+      "args": ["path/to/froggy-rag-mcp/src/cli/mcp-cli.js"],
       "env": {}
     }
   }
@@ -225,16 +233,19 @@ node src/cli/mcp-cli.js call get_document_chunks --documentId "doc-123"
 node src/cli/mcp-cli.js call ingest_directory --dirPath "/path/to/docs" --recursive true --watch true
 ```
 
-### Available Tools
+### Available Tools (MCP protocol)
 
-All modes support the same set of tools:
-- `search` - Search the vector store for similar content
-- `get_documents` - Get all documents in the vector store
-- `get_document_chunks` - Get chunks for a specific document
-- `get_chunk` - Get chunk content by ID
-- `get_stats` - Get vector store statistics
-- `ingest_file` - Ingest a file into the vector store
-- `ingest_directory` - Ingest a directory into the vector store
+The MCP server (`tools/list` / stdio / JSON-RPC) exposes:
+
+- `search_vector_store` — Semantic search over the vector store (`topK`, optional `namespace`, optional `filters` such as algorithm)
+- `get_document` — Fetch a document by ID (optional `namespace`)
+- `get_chunk` — Fetch a chunk by ID (optional `namespace`)
+- `list_documents` — Paginated document list (optional `namespace`)
+- `list_namespaces` — List corpus namespaces on disk
+
+The **CLI** accepts `call search` as shorthand for `search_vector_store`, and `call get_documents` for `list_documents`. Commands such as **`call ingest_file`**, **`call ingest_directory`**, **`stats`**, and **`get_document_chunks`** use the local RAG service directly; they are **not** advertised as MCP tools to remote MCP clients.
+
+For **chat with automatic retrieval**, use **LLM Passthrough** and the inbound HTTP endpoints in the app, not an MCP tool.
 
 ### Server Management
 
