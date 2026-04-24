@@ -61,7 +61,7 @@ cd froggy-nobs-mcp-rag
 npm install
 ```
 
-3. The `postinstall` script will automatically rebuild `better-sqlite3` for your platform.
+3. The `postinstall` script rebuilds native modules (`better-sqlite3`, `sharp`) for the **installed Electron version** so they match the app runtime (not system Node).
 
 ## Usage
 

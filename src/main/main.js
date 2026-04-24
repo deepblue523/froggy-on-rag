@@ -3,9 +3,6 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 
-// Get version from package.json
-const packageJson = require('../../package.json');
-const appVersion = packageJson.version;
 const paths = require('../paths');
 const { readJsonObject, patchAppSettings, readMergedSettingsFromDisk } = require('../settings-files');
 
@@ -157,7 +154,7 @@ async function initializeServices() {
   } catch (error) {
     console.error('Error initializing services:', error);
     if (error.message && error.message.includes('better_sqlite3')) {
-      console.error('Please run: npm rebuild better-sqlite3');
+      console.error('Try: npm install (postinstall rebuilds native modules) or: npx electron-rebuild -f -w better-sqlite3 -w sharp');
     }
     throw error;
   }
@@ -267,7 +264,7 @@ function ensureTray() {
     return;
   }
   tray = new Tray(icon);
-  tray.setToolTip(`Froggy RAG MCP (v${appVersion})`);
+  tray.setToolTip(`Froggy RAG MCP (v${app.getVersion()})`);
   tray.setContextMenu(buildTrayMenu());
   tray.on('click', () => {
     showMainWindowFromTray();
@@ -349,7 +346,7 @@ function createSplashWindow() {
     }
   });
   splashWindow.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html'), {
-    query: { version: appVersion }
+    query: { version: app.getVersion() }
   });
   // Show as soon as the document loads. `ready-to-show` often fires *after* the main
   // window's `ready-to-show`, so the splash was destroyed while still `show: false`.
@@ -385,7 +382,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    title: `Froggy RAG MCP (v${appVersion})`,
+    title: `Froggy RAG MCP (v${app.getVersion()})`,
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'renderer', 'images', 'Froggy RAG x32.png')
   });
@@ -618,7 +615,7 @@ ipcMain.on('tray-settings-changed', () => {
 });
 
 ipcMain.handle('get-data-dir', () => dataDir);
-ipcMain.handle('get-app-version', () => appVersion);
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('namespace-list', () => paths.listNamespaceDirNames());
 ipcMain.handle('namespace-get-active', () => currentNamespaceName);

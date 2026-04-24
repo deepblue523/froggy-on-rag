@@ -18,7 +18,7 @@
     "version:minor": "node scripts/bump-version.js minor",
     "version:major": "node scripts/bump-version.js major",
     "release": "npm run version:patch && npm run build:publish",
-    "postinstall": "cross-env npm_config_msvs_version=2022 electron-rebuild -f -w better-sqlite3",
+    "postinstall": "node scripts/electron-rebuild-native.cjs",
     "mcp-stdio": "node src/cli/mcp-cli.js",
     "mcp": "node src/cli/mcp-cli.js"
   },
@@ -87,10 +87,7 @@
           ]
         }
       ],
-      "signingHashAlgorithms": [],
-      "sign": null,
-      "certificateFile": null,
-      "certificatePassword": null
+      "forceCodeSigning": false
     },
     "mac": {
       "target": [
