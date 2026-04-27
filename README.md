@@ -73,10 +73,12 @@ npm install
 
 ### Starting the Application
 
-**Development mode** (with DevTools):
+**Development mode**:
 ```bash
 npm run dev
 ```
+
+To open DevTools automatically, launch Electron with `--open-devtools`.
 
 **Production mode**:
 ```bash

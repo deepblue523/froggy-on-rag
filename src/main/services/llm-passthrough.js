@@ -3,6 +3,7 @@
  */
 
 const { searchCorpusInNamespaces } = require('./mcp/corpus-namespace-query');
+const { searchGoogleCustomSearch } = require('./web-search');
 
 function trimTrailingSlash(url) {
   return String(url || '').replace(/\/+$/, '');
@@ -59,6 +60,39 @@ function formatSearchHitsForContext(results) {
     }
   }
   return blocks.join('\n\n---\n\n');
+}
+
+function combineContextBlocks(localContextBlock, webContextBlock) {
+  const local = String(localContextBlock || '').trim();
+  const web = String(webContextBlock || '').trim();
+  if (local && web) {
+    return [
+      '### Local vector store results',
+      '',
+      local,
+      '',
+      '### Web search results',
+      '',
+      web
+    ].join('\n');
+  }
+  return local || web;
+}
+
+async function getWebContextForPassthrough(settings, query, warnings) {
+  if (settings.llmPassthroughIncludeWebResults !== true) {
+    return '';
+  }
+  try {
+    const out = await searchGoogleCustomSearch(settings, query, {
+      numResults: settings.googleCustomSearchNumResults
+    });
+    return out.context || '';
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    warnings.push(`Web search skipped: ${msg}`);
+    return '';
+  }
 }
 
 function buildMessages(systemPreamble, userPrompt) {
@@ -205,16 +239,18 @@ async function runLlmPassthrough(ragService, userPrompt, options = {}) {
   const errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
   const hits = searchOut.results || [];
   const scope = searchOut.scope;
-  const contextBlock = formatSearchHitsForContext(hits);
+  const localContextBlock = formatSearchHitsForContext(hits);
+  const webContextBlock = await getWebContextForPassthrough(settings, trimmedPrompt, warnings);
+  const contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
   const contextForModel =
     contextBlock ||
-    'No relevant chunks were retrieved from the knowledge base for this query. Answer using general knowledge and say that no local context was found.';
+    'No relevant chunks were retrieved from the knowledge base or web search for this query. Answer using general knowledge and say that no retrieved context was found.';
 
   const systemPreamble = [
     'You are a helpful assistant.',
     'The user message may be followed by instructions to use retrieved context.',
-    'Use the following excerpts from the user\'s indexed documents when they help answer the question.',
-    'If the excerpts are irrelevant, say so briefly and answer without inventing document content.',
+    'Use the following retrieved context from indexed documents and web search when it helps answer the question.',
+    'If the context is irrelevant, say so briefly and answer without inventing retrieved details.',
     '',
     '### Retrieved context',
     '',
@@ -305,8 +341,8 @@ function getRagQueryFromMessages(messages) {
 function injectRagIntoMessages(messages, contextForModel) {
   const ragBlock = [
     'You are a helpful assistant.',
-    'Use the following excerpts from the user\'s indexed documents when they help answer the question.',
-    'If the excerpts are irrelevant, say so briefly and answer without inventing document content.',
+    'Use the following retrieved context from indexed documents and web search when it helps answer the question.',
+    'If the context is irrelevant, say so briefly and answer without inventing retrieved details.',
     '',
     '### Retrieved context',
     '',
@@ -403,10 +439,12 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
   const errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
   const hits = searchOut.results || [];
   const scope = searchOut.scope;
-  const contextBlock = formatSearchHitsForContext(hits);
+  const localContextBlock = formatSearchHitsForContext(hits);
+  const webContextBlock = await getWebContextForPassthrough(settings, ragQuery, warnings);
+  const contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
   const contextForModel =
     contextBlock ||
-    'No relevant chunks were retrieved from the knowledge base for this query. Answer using general knowledge and say that no local context was found.';
+    'No relevant chunks were retrieved from the knowledge base or web search for this query. Answer using general knowledge and say that no retrieved context was found.';
 
   const augmented = injectRagIntoMessages(messages, contextForModel);
   const model =
@@ -466,6 +504,7 @@ module.exports = {
   completeChatProxy,
   extractPassthroughUpstreamReply,
   formatSearchHitsForContext,
+  combineContextBlocks,
   normalizeChatMessages,
   getRagQueryFromMessages,
   injectRagIntoMessages,

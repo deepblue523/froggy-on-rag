@@ -11,6 +11,7 @@ const {
 } = require('./namespace-scope');
 const { searchCorpusInNamespaces, mergeMetaWithNamespace } = require('./corpus-namespace-query');
 const paths = require('../../../paths');
+const { searchGoogleCustomSearch } = require('../web-search');
 
 const DOCUMENT_RESOURCE_SCHEME = 'froggy-rag';
 const CHUNK_RESOURCE_SCHEME = 'froggy-rag-chunk';
@@ -78,6 +79,23 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {}
     }
+  },
+  {
+    name: 'web_search',
+    description:
+      'Search the web using Google Custom Search and return result snippets as context. Requires Google Custom Search settings under Settings -> Web Search.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        numResults: {
+          type: 'integer',
+          default: 5,
+          description: 'Number of Google Custom Search results to return (1-10).'
+        }
+      },
+      required: ['query']
+    }
   }
 ];
 
@@ -110,7 +128,8 @@ class MCPToolRegistry {
       get_document: (args) => this._getDocument(args),
       get_chunk: (args) => this._getChunk(args),
       list_documents: (args) => this._listDocuments(args),
-      list_namespaces: (args) => this._listNamespaces(args)
+      list_namespaces: (args) => this._listNamespaces(args),
+      web_search: (args) => this._webSearch(args)
     };
   }
 
@@ -379,6 +398,33 @@ class MCPToolRegistry {
           : 'No active namespace inferred; corpus tools without namespace search/list across all corpora on disk.'
       })
     };
+  }
+
+  async _webSearch(args) {
+    const query = args.query;
+    if (typeof query !== 'string' || !query.trim()) {
+      return rpcError(-32602, 'Invalid params', 'query is required');
+    }
+    const numResults = args.numResults !== undefined ? Number(args.numResults) : undefined;
+    if (numResults !== undefined && (!Number.isFinite(numResults) || numResults < 1)) {
+      return rpcError(-32602, 'Invalid params', 'numResults must be a positive integer');
+    }
+
+    try {
+      const out = await searchGoogleCustomSearch(this.ragService.getSettings(), query.trim(), {
+        numResults: numResults === undefined ? undefined : Math.floor(numResults)
+      });
+      return {
+        result: textToolResult({
+          query: out.query,
+          results: out.results,
+          context: out.context,
+          searchInformation: out.searchInformation
+        })
+      };
+    } catch (e) {
+      return rpcError(-32602, 'Invalid params', e.message);
+    }
   }
 }
 

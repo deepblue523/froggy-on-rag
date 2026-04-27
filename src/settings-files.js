@@ -161,6 +161,10 @@ function getDefaultSettings() {
     llmPassthroughTestTransport: 'inbound-http',
     /** @type {string[]} Up to 5 recent custom inbound test hosts (loopback/localhost are not stored). */
     llmPassthroughTestInboundHostMru: [],
+    googleCustomSearchApiKey: '',
+    googleCustomSearchEngineId: '',
+    googleCustomSearchNumResults: 5,
+    llmPassthroughIncludeWebResults: false,
     /** @deprecated mirrors llmPassthroughEnabled; kept for older settings.json */
     passthroughListenEnabled: false,
     passthroughOllamaListenEnabled: false,

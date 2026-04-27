@@ -376,6 +376,7 @@ async function reloadNamespaceContext() {
   await refreshVectorStore();
   await refreshServerStatus();
   await loadServerSettings();
+  await loadWebSearchSettings();
   await loadMetadataFilteringSettings();
   await checkAndAutoStartServer();
   if (currentCanvas === 'llm') {
@@ -941,6 +942,35 @@ function setupEventListeners() {
       applyLlmPassthroughDraftToInputs(next);
       llmProviderSelect.dataset.lastProvider = next;
       syncLlmPassthroughProviderUi();
+    });
+  }
+
+  const webSearchApiKeyInput = document.getElementById('settings-google-custom-search-api-key-input');
+  if (webSearchApiKeyInput) {
+    webSearchApiKeyInput.addEventListener('change', () => {
+      void persistWebSearchSettingsFromInputs();
+    });
+  }
+  const webSearchCxInput = document.getElementById('settings-google-custom-search-engine-id-input');
+  if (webSearchCxInput) {
+    webSearchCxInput.addEventListener('change', () => schedulePersistWebSearchSettings());
+    webSearchCxInput.addEventListener('input', () => schedulePersistWebSearchSettings());
+  }
+  const webSearchNumInput = document.getElementById('settings-google-custom-search-num-results-input');
+  if (webSearchNumInput) {
+    webSearchNumInput.addEventListener('change', () => schedulePersistWebSearchSettings());
+    webSearchNumInput.addEventListener('input', () => schedulePersistWebSearchSettings());
+  }
+  const webSearchIncludeInput = document.getElementById('settings-llm-passthrough-include-web-results-input');
+  if (webSearchIncludeInput) {
+    webSearchIncludeInput.addEventListener('change', () => {
+      void persistWebSearchSettingsFromInputs();
+    });
+  }
+  const webSearchSaveBtn = document.getElementById('settings-web-search-save-btn');
+  if (webSearchSaveBtn) {
+    webSearchSaveBtn.addEventListener('click', () => {
+      void persistWebSearchSettingsFromInputs();
     });
   }
 
@@ -3155,6 +3185,110 @@ async function loadServerSettings() {
   }
 }
 
+function loadWebSearchSettingsFrom(settings) {
+  const googleKey = document.getElementById('settings-google-custom-search-api-key-input');
+  if (googleKey) {
+    googleKey.value = '';
+    googleKey.placeholder = settings.googleCustomSearchApiKey
+      ? 'Saved key is configured; leave blank to keep it'
+      : 'Leave blank to keep existing key';
+  }
+  const googleKeyStatus = document.getElementById('settings-google-custom-search-api-key-status');
+  if (googleKeyStatus) {
+    googleKeyStatus.textContent = settings.googleCustomSearchApiKey
+      ? 'A Google Custom Search API key is saved. Enter a new key only if you want to replace it.'
+      : 'No Google Custom Search API key is saved yet.';
+  }
+  const googleCx = document.getElementById('settings-google-custom-search-engine-id-input');
+  if (googleCx) {
+    googleCx.value = settings.googleCustomSearchEngineId || '';
+  }
+  const googleNum = document.getElementById('settings-google-custom-search-num-results-input');
+  if (googleNum) {
+    googleNum.value =
+      settings.googleCustomSearchNumResults != null ? settings.googleCustomSearchNumResults : 5;
+  }
+  const includeWeb = document.getElementById('settings-llm-passthrough-include-web-results-input');
+  if (includeWeb) {
+    includeWeb.checked = settings.llmPassthroughIncludeWebResults === true;
+  }
+  const saveStatus = document.getElementById('settings-web-search-save-status');
+  if (saveStatus) {
+    saveStatus.textContent = '';
+  }
+}
+
+async function loadWebSearchSettings() {
+  const settings = await window.electronAPI.getSettings();
+  loadWebSearchSettingsFrom(settings);
+}
+
+function applyWebSearchSettingsFieldsToSettings(settings) {
+  const googleApiKeyInput = document.getElementById('settings-google-custom-search-api-key-input');
+  const googleCxInput = document.getElementById('settings-google-custom-search-engine-id-input');
+  const googleNumInput = document.getElementById('settings-google-custom-search-num-results-input');
+  const includeWebInput = document.getElementById('settings-llm-passthrough-include-web-results-input');
+  if (!googleApiKeyInput || !googleCxInput || !googleNumInput || !includeWebInput) {
+    return { ok: false, message: 'Settings form is missing Web Search fields.' };
+  }
+  const googleNumResults = parseInt(googleNumInput.value, 10) || 5;
+  if (googleNumResults < 1 || googleNumResults > 10) {
+    return { ok: false, message: 'Google Custom Search results per search must be between 1 and 10.' };
+  }
+  const newGoogleApiKey = String(googleApiKeyInput.value || '').trim();
+  if (newGoogleApiKey !== '') {
+    settings.googleCustomSearchApiKey = newGoogleApiKey;
+  }
+  settings.googleCustomSearchEngineId = String(googleCxInput.value || '').trim();
+  settings.googleCustomSearchNumResults = googleNumResults;
+  settings.llmPassthroughIncludeWebResults = includeWebInput.checked === true;
+  return { ok: true };
+}
+
+let webSearchSettingsSaveTimer = null;
+
+function schedulePersistWebSearchSettings() {
+  if (webSearchSettingsSaveTimer) clearTimeout(webSearchSettingsSaveTimer);
+  webSearchSettingsSaveTimer = setTimeout(() => {
+    webSearchSettingsSaveTimer = null;
+    void persistWebSearchSettingsFromInputs({ silent: true });
+  }, 450);
+}
+
+async function persistWebSearchSettingsFromInputs(options = {}) {
+  const saveStatus = document.getElementById('settings-web-search-save-status');
+  try {
+    const settings = await window.electronAPI.getSettings();
+    const result = applyWebSearchSettingsFieldsToSettings(settings);
+    if (!result.ok) {
+      if (!options.silent) {
+        alert(result.message);
+      }
+      if (saveStatus && !options.silent) {
+        saveStatus.textContent = result.message;
+      }
+      return false;
+    }
+    settings.__allowWebSearchSettingsSave = true;
+    await window.electronAPI.saveSettings(settings);
+    window.electronAPI.notifyTraySettingsChanged();
+    loadWebSearchSettingsFrom(settings);
+    if (saveStatus) {
+      saveStatus.textContent = 'Saved.';
+    }
+    return true;
+  } catch (e) {
+    console.error('persistWebSearchSettingsFromInputs', e);
+    if (!options.silent) {
+      alert(`Could not save web search settings: ${e.message}`);
+    }
+    if (saveStatus && !options.silent) {
+      saveStatus.textContent = `Could not save: ${e.message}`;
+    }
+    return false;
+  }
+}
+
 function syncLlmPassthroughProviderUi() {
   const sel = document.getElementById('settings-llm-passthrough-provider-select');
   const wrap = document.getElementById('settings-llm-passthrough-api-key-wrap');
@@ -3807,6 +3941,11 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   settings.llmPassthroughTimeoutMs = llmTimeoutMs;
   settings.llmPassthroughSearchAlgorithm = llmAlgo;
 
+  const webSearchSettingsResult = applyWebSearchSettingsFieldsToSettings(settings);
+  if (!webSearchSettingsResult.ok) {
+    return webSearchSettingsResult;
+  }
+
   const llmTransportSelect = document.getElementById('llm-passthrough-test-transport-select');
   if (llmTransportSelect) {
     settings.llmPassthroughTestTransport =
@@ -3876,6 +4015,7 @@ async function persistSettingsModal() {
       return false;
     }
     const nextPassthroughEnabled = settings.llmPassthroughEnabled === true;
+    settings.__allowWebSearchSettingsSave = true;
     await window.electronAPI.saveSettings(settings);
     window.electronAPI.notifyTraySettingsChanged();
 
@@ -4641,6 +4781,7 @@ async function showSettingsModal() {
   await loadMetadataFilteringSettings();
   await loadGeneralSettings();
   await loadServerSettings();
+  await loadWebSearchSettings();
   await loadLlmTestPanelRetrievalSettings();
   await loadUpdatesSettingsPanel();
 

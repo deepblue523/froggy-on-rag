@@ -450,8 +450,8 @@ function createWindow() {
     hideWindowToTray();
   });
 
-  // Open DevTools in development
-  if (process.argv.includes('--dev')) {
+  // DevTools can still be opened explicitly without making every dev launch noisy.
+  if (process.argv.includes('--open-devtools')) {
     mainWindow.webContents.openDevTools();
   }
 }

@@ -116,15 +116,24 @@ class RAGService extends EventEmitter {
 
   saveSettings(newSettings) {
     if (newSettings) {
-      this.settings = { ...this.settings, ...newSettings };
+      const allowWebSearchSettingsSave = newSettings.__allowWebSearchSettingsSave === true;
+      const settingsPatch = { ...newSettings };
+      delete settingsPatch.__allowWebSearchSettingsSave;
+      if (!allowWebSearchSettingsSave) {
+        delete settingsPatch.googleCustomSearchApiKey;
+        delete settingsPatch.googleCustomSearchEngineId;
+        delete settingsPatch.googleCustomSearchNumResults;
+        delete settingsPatch.llmPassthroughIncludeWebResults;
+      }
+      this.settings = { ...this.settings, ...settingsPatch };
       
       // Update document processor if normalizeEmbeddings changed
-      if (newSettings.normalizeEmbeddings !== undefined && this.documentProcessor) {
-        this.documentProcessor.normalizeEmbeddings = newSettings.normalizeEmbeddings;
+      if (settingsPatch.normalizeEmbeddings !== undefined && this.documentProcessor) {
+        this.documentProcessor.normalizeEmbeddings = settingsPatch.normalizeEmbeddings;
       }
       
       // Reload embedding model if model changed
-      if (newSettings.embeddingModel && newSettings.embeddingModel !== this.settings.embeddingModel) {
+      if (settingsPatch.embeddingModel && settingsPatch.embeddingModel !== this.settings.embeddingModel) {
         this.loadEmbeddingModel();
       }
     }
