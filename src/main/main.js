@@ -296,13 +296,52 @@ function resolveSplashImagePath() {
   return path.join(__dirname, '..', '..', relative);
 }
 
+/** Read width/height from PNG IHDR without decoding pixels (keeps startup off the UI thread). */
+function readPngDimensionsSync(filePath) {
+  try {
+    const buf = Buffer.allocUnsafe(24);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      fs.readSync(fd, buf, 0, 24, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const sig = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    if (!sig) return null;
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    if (
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width < 1 ||
+      height < 1 ||
+      width > 32768 ||
+      height > 32768
+    ) {
+      return null;
+    }
+    return { width, height };
+  } catch (_) {
+    return null;
+  }
+}
+
 function getSplashWindowSize() {
   const splashPath = resolveSplashImagePath();
-  const img = nativeImage.createFromPath(splashPath);
-  if (img.isEmpty()) {
-    return { width: 720, height: 480 };
+  let iw = 720;
+  let ih = 480;
+  const fromPng = readPngDimensionsSync(splashPath);
+  if (fromPng) {
+    iw = fromPng.width;
+    ih = fromPng.height;
+  } else if (fs.existsSync(splashPath)) {
+    const img = nativeImage.createFromPath(splashPath);
+    if (!img.isEmpty()) {
+      const size = img.getSize();
+      iw = size.width;
+      ih = size.height;
+    }
   }
-  const { width: iw, height: ih } = img.getSize();
   const { workAreaSize } = screen.getPrimaryDisplay();
   const maxW = Math.floor(workAreaSize.width * 0.92);
   const maxH = Math.floor(workAreaSize.height * 0.92);
@@ -355,18 +394,10 @@ function createSplashWindow() {
   splashWindow.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html'), {
     query: { version: app.getVersion() }
   });
-  // Show as soon as the document loads. `ready-to-show` often fires *after* the main
-  // window's `ready-to-show`, so the splash was destroyed while still `show: false`.
-  splashWindow.webContents.once('did-finish-load', () => {
-    if (splashWindow && !splashWindow.isDestroyed()) {
-      splashWindow.show();
-    }
-  });
-  splashWindow.once('ready-to-show', () => {
-    if (splashWindow && !splashWindow.isDestroyed() && !splashWindow.isVisible()) {
-      splashWindow.show();
-    }
-  });
+  // Show immediately: `did-finish-load` / window.onload wait for the CSS background
+  // image, so the splash stayed hidden until the PNG finished loading twice (main
+  // thread decode in getSplashWindowSize was also removed for PNGs).
+  splashWindow.show();
 }
 
 function createWindow() {
