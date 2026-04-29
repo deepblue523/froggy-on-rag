@@ -1,6 +1,6 @@
 {
   "name": "froggy-rag-mcp",
-  "version": "1.0.18",
+  "version": "1.1.0",
   "description": "Turnkey RAG system with MCP server and UI",
   "main": "src/main/main.js",
   "bin": {
