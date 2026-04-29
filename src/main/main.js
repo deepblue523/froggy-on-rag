@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
+const chokidar = require('chokidar');
 
 const paths = require('../paths');
 const { readJsonObject, patchAppSettings, readMergedSettingsFromDisk } = require('../settings-files');
@@ -18,10 +19,13 @@ app.on('second-instance', () => {
   }
 });
 
-paths.ensureUserDataLayout();
-let currentNamespaceName = paths.resolveInitialNamespaceName();
+let currentNamespaceName = 'general';
 let dataDir = paths.getDataDirForNamespace(currentNamespaceName);
-{
+
+function initializeUserDataLayout() {
+  paths.ensureUserDataLayout();
+  currentNamespaceName = paths.resolveInitialNamespaceName();
+  dataDir = paths.getDataDirForNamespace(currentNamespaceName);
   const appLayer = readJsonObject(paths.getAppSettingsPath());
   if (appLayer.activeNamespace !== currentNamespaceName) {
     patchAppSettings(paths.getAppSettingsPath(), { activeNamespace: currentNamespaceName });
@@ -39,6 +43,9 @@ let mcpService = null;
 /** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
 let passthroughInbound = null;
 let updateCheckIntervalId = null;
+let devReloadWatcher = null;
+let devRendererReloadTimer = null;
+let devAppRestartTimer = null;
 
 function getWindowState() {
   try {
@@ -456,6 +463,66 @@ function createWindow() {
   }
 }
 
+function isDevelopmentEnvironment() {
+  return !app.isPackaged || process.argv.includes('--dev');
+}
+
+function scheduleRendererReload(filePath) {
+  clearTimeout(devRendererReloadTimer);
+  devRendererReloadTimer = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    console.log(`[DevReload] Reloading renderer after change: ${filePath}`);
+    mainWindow.webContents.reloadIgnoringCache();
+  }, 100);
+}
+
+function scheduleAppRestart(filePath) {
+  clearTimeout(devAppRestartTimer);
+  devAppRestartTimer = setTimeout(() => {
+    console.log(`[DevReload] Restarting Electron after change: ${filePath}`);
+    isAppQuitting = true;
+    app.relaunch({ args: process.argv.slice(1) });
+    app.exit(0);
+  }, 150);
+}
+
+function startDevReloadWatcher() {
+  if (!isDevelopmentEnvironment() || devReloadWatcher) return;
+
+  const rendererDir = path.normalize(path.join(__dirname, '..', 'renderer'));
+  const mainDir = __dirname;
+  const sharedFiles = [
+    path.join(__dirname, '..', 'paths.js'),
+    path.join(__dirname, '..', 'settings-files.js')
+  ];
+
+  devReloadWatcher = chokidar.watch([rendererDir, mainDir, ...sharedFiles], {
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 100,
+      pollInterval: 25
+    }
+  });
+
+  devReloadWatcher.on('all', (event, changedPath) => {
+    if (!['add', 'change', 'unlink'].includes(event)) return;
+
+    const normalizedPath = path.normalize(changedPath);
+    const relativePath = path.relative(__dirname, normalizedPath);
+
+    if (normalizedPath.startsWith(rendererDir + path.sep) || relativePath === 'preload.js') {
+      scheduleRendererReload(normalizedPath);
+      return;
+    }
+
+    scheduleAppRestart(normalizedPath);
+  });
+
+  devReloadWatcher.on('error', (error) => {
+    console.error('[DevReload] Watcher error:', error);
+  });
+}
+
 function isAutoUpdateEnvironment() {
   return app.isPackaged && !process.argv.includes('--dev');
 }
@@ -571,18 +638,24 @@ ipcMain.handle('install-update', async () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true;
+  if (devReloadWatcher) {
+    devReloadWatcher.close().catch((error) => console.error('[DevReload] Error closing watcher:', error));
+    devReloadWatcher = null;
+  }
   destroySplashWindow();
   destroyTray();
 });
 
 app.whenReady().then(() => {
+  createSplashWindow();
+  initializeUserDataLayout();
   registerAutoUpdaterListeners();
 
   // Register IPC handlers with null refs so renderer calls can wait for services
   require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null);
 
-  createSplashWindow();
   createWindow();
+  startDevReloadWatcher();
 
   // Defer service init so the first paint can show the loading screen, then run in background
   setImmediate(() => {

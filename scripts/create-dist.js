@@ -2,7 +2,7 @@
 
 /**
  * Create a source distribution package
- * Copies necessary files to dist/ directory for distribution
+ * Copies necessary files to dist/ folder for distribution
  */
 
 const fs = require('fs');
@@ -11,7 +11,7 @@ const path = require('path');
 const distDir = path.join(__dirname, '..', 'dist');
 const projectRoot = path.join(__dirname, '..');
 
-// Files and directories to copy
+// Files and folders to copy
 const filesToCopy = [
   'package.json',
   'package-lock.json',
@@ -25,7 +25,7 @@ const dirsToCopy = [
   'scripts'
 ];
 
-// Files to exclude from src directory
+// Files to exclude from src folder
 const excludePatterns = [
   /\.map$/,
   /\.log$/,
@@ -121,7 +121,7 @@ To create platform-specific installers:
 npm run build
 \`\`\`
 
-This will create installers in the \`dist\` directory using electron-builder.
+This will create installers in the \`dist\` folder using electron-builder.
 
 ## Documentation
 
@@ -134,7 +134,7 @@ See README.md for full documentation.
 // Main execution
 console.log('Creating distribution package...');
 
-// Clean dist directory (but preserve electron-builder outputs if they exist)
+// Clean dist folder (but preserve electron-builder outputs if they exist)
 if (fs.existsSync(distDir)) {
   const entries = fs.readdirSync(distDir);
   for (const entry of entries) {
@@ -169,8 +169,8 @@ for (const file of filesToCopy) {
   }
 }
 
-// Copy directories
-console.log('Copying directories...');
+// Copy folders
+console.log('Copying folders...');
 for (const dir of dirsToCopy) {
   const srcPath = path.join(projectRoot, dir);
   const destPath = path.join(distDir, dir);

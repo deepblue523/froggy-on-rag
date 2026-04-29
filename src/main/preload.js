@@ -1,16 +1,38 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // Data directory
+  // Data folder
   getDataDir: () => ipcRenderer.invoke('get-data-dir'),
 
-  // Namespaces (per data subdirectory under ~/froggy-rag-mcp/data)
+  /**
+   * Resolve the absolute path for a dropped/picked File. In Electron 32+, `File.path` is
+   * removed, so renderer drag-and-drop must round-trip File objects through this helper to
+   * recover the underlying filesystem path.
+   * @param {File | null | undefined} file
+   * @returns {string}
+   */
+  getPathForFile: (file) => {
+    try {
+      if (!file || typeof webUtils?.getPathForFile !== 'function') return '';
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
+  },
+
+  // Namespaces (per data subfolder under ~/froggy-rag-mcp/data)
   listNamespaces: () => ipcRenderer.invoke('namespace-list'),
   getActiveNamespace: () => ipcRenderer.invoke('namespace-get-active'),
   setActiveNamespace: (name) => ipcRenderer.invoke('namespace-set', name),
   createNamespace: (name) => ipcRenderer.invoke('namespace-create', name),
   renameNamespace: (from, to) => ipcRenderer.invoke('namespace-rename', from, to),
   deleteNamespace: (name) => ipcRenderer.invoke('namespace-delete', name),
+  getNamespacePromptProfiles: (namespaceName) =>
+    ipcRenderer.invoke('namespace-prompt-profiles-get', namespaceName),
+  saveNamespacePromptProfile: (namespaceName, profile, originalName) =>
+    ipcRenderer.invoke('namespace-prompt-profile-save', namespaceName, profile, originalName),
+  deleteNamespacePromptProfile: (namespaceName, profileName) =>
+    ipcRenderer.invoke('namespace-prompt-profile-delete', namespaceName, profileName),
   onNamespaceChanged: (callback) => {
     ipcRenderer.on('namespace-changed', (_, payload) => callback(payload));
   },

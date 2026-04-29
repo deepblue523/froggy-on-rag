@@ -74,7 +74,7 @@ const TOOL_DEFINITIONS = [
   {
     name: 'list_namespaces',
     description:
-      'List corpus namespace directories under the user data root and whether each has a vector store. Includes the active/default namespace when inferable.',
+      'List corpus namespace folders under the user data root and whether each has a vector store. Includes the active/default namespace when inferable.',
     inputSchema: {
       type: 'object',
       properties: {}
@@ -394,7 +394,7 @@ class MCPToolRegistry {
         namespaces,
         activeNamespace: active,
         note: active
-          ? 'activeNamespace is inferred from the server data directory under the standard data root.'
+          ? 'activeNamespace is inferred from the server data folder under the standard data root.'
           : 'No active namespace inferred; corpus tools without namespace search/list across all corpora on disk.'
       })
     };

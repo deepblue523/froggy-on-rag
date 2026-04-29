@@ -8,7 +8,7 @@
  *
  * Global options (any position before or between command words):
  *   --namespace, -n <name>   Use ~/froggy-rag-mcp/data/<name>; create if missing.
- *   --data-path <path>       With --namespace: use this directory for DB/settings
+ *   --data-path <path>       With --namespace: use this folder for DB/settings
  *                            (vector store, namespace.json). Create if missing.
  *                            Requires --namespace. If omitted, default data dir is used.
  */

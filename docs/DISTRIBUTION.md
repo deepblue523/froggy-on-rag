@@ -6,7 +6,7 @@ This document explains how to create and use distribution packages for Froggy RA
 
 ### Source Distribution Package
 
-Creates a clean source code package in the `dist/` directory:
+Creates a clean source code package in the `dist/` folder:
 
 ```bash
 npm run dist
@@ -28,7 +28,7 @@ This will:
 
 ### NPM Package
 
-Creates an npm package file (`.tgz`) in the `dist/` directory:
+Creates an npm package file (`.tgz`) in the `dist/` folder:
 
 ```bash
 npm run dist:pack
@@ -47,7 +47,7 @@ Creates platform-specific installers using electron-builder:
 npm run build
 ```
 
-This creates installers in the `dist/` directory:
+This creates installers in the `dist/` folder:
 - **Windows**: `.exe` installer
 - **macOS**: `.dmg` disk image
 - **Linux**: `.AppImage`, `.deb`, `.rpm`, or `.snap` (depending on configuration)
@@ -56,7 +56,7 @@ This creates installers in the `dist/` directory:
 
 ### From Source Distribution
 
-1. Navigate to the distribution directory:
+1. Navigate to the distribution folder:
 ```bash
 cd dist
 ```
@@ -92,7 +92,7 @@ You can also run the distribution version directly from the project root after c
 node dist/src/main/main.js
 ```
 
-However, it's recommended to use `npm start` from within the `dist` directory after running `npm install` there.
+However, it's recommended to use `npm start` from within the `dist` folder after running `npm install` there.
 
 **MCP Server:**
 ```bash
@@ -107,7 +107,7 @@ npm run mcp
 
 ## Distribution Structure
 
-After running `npm run dist`, the `dist/` directory will contain:
+After running `npm run dist`, the `dist/` folder will contain:
 
 ```
 dist/
@@ -125,7 +125,7 @@ dist/
 
 ## Notes
 
-- The source distribution does **not** include `node_modules`. Users must run `npm install` in the `dist` directory.
+- The source distribution does **not** include `node_modules`. Users must run `npm install` in the `dist` folder.
 - The distribution `package.json` has devDependencies removed to reduce size.
 - Electron installers created by `npm run build` are standalone executables that don't require Node.js to be installed.
 

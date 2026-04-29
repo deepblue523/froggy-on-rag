@@ -1,6 +1,6 @@
 # Froggy RAG MCP
 
-A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration. With LLM Passthrough and optional inbound HTTP listeners enabled under Settings → Server, the app can also act as a local passthrough: it accepts Ollama-style or OpenAI-compatible chat requests, retrieves from your corpora, and injects that context into the upstream LLM call so existing HTTP clients get RAG without orchestrating MCP tools. Clients that prefer explicit retrieval can still use MCP tools such as `search_vector_store` and `list_namespaces`.
+A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Model Context Protocol) server and modern UI. This is a self-contained Electron application that provides a complete solution for document ingestion, vector storage, semantic search, and MCP server integration. With LLM Passthrough and optional inbound HTTP listeners enabled under Settings → LLM Passthrough, the app can also act as a local passthrough: it accepts Ollama-style or OpenAI-compatible chat requests, retrieves from your corpora, and injects that context into the upstream LLM call so existing HTTP clients get RAG without orchestrating MCP tools. Clients that prefer explicit retrieval can still use MCP tools such as `search_vector_store` and `list_namespaces`.
 
 ## Features
 
@@ -12,9 +12,9 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
 
 ### 📚 Document Management
 - **File Ingestion**: Add individual files via drag-and-drop or file picker
-- **Directory Ingestion**: Add entire directories for batch processing
-- **File Watching**: Monitor files and directories for changes with automatic re-ingestion
-- **Recursive Directory Watching**: Option to watch directories recursively
+- **Folder Ingestion**: Add entire folders for batch processing
+- **File Watching**: Monitor files and folders for changes with automatic re-ingestion
+- **Recursive Folder Watching**: Option to watch folders recursively
 
 ### 🔎 Search & Retrieval
 - **Semantic Search**: World-class matching based on input queries and vector store
@@ -24,7 +24,7 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
 ### 🤖 LLM Passthrough (RAG on chat completions)
 
 - **Local API surface**: With passthrough enabled, the app listens on configurable ports and proxies chat to your configured **upstream** (Ollama or OpenAI-compatible), after augmenting requests with retrieval from the active namespace or headers you send.
-- **Per-provider settings**: Separate base URL, model, and API key for Ollama vs OpenAI-style upstreams (see **Settings → Server**).
+- **Per-provider settings**: Separate base URL, model, and API key for Ollama vs OpenAI-style upstreams (see **Settings → LLM Passthrough**).
 - **Complements MCP**: MCP clients continue to use tools such as `search_vector_store`; passthrough is for HTTP clients that expect a normal **chat completions** endpoint with retrieval applied automatically.
 
 ### 🌐 MCP Server
@@ -36,7 +36,7 @@ A turnkey, integrated RAG (Retrieval Augmented Generation) system with MCP (Mode
 ### 🎨 User Interface
 - **Modern Design**: Clean, intuitive interface with resizable panels
 - **Tree Navigation**: Organized navigation with four main sections:
-  - **Ingestion**: Manage files and directories
+  - **Ingestion**: Manage files and folders
   - **Vector Store**: View documents, chunks, and metadata
   - **Search**: Perform semantic searches with MRU support
   - **Server**: Control MCP server and view logs
@@ -91,7 +91,7 @@ npm start
 npm run build
 ```
 
-This will create distributable packages in the `dist` directory using electron-builder.
+This will create distributable packages in the `dist` folder using electron-builder.
 
 ## Application Structure
 
@@ -127,7 +127,7 @@ This includes:
 - Vector store database (SQLite)
 - Settings and preferences
 - Window state
-- Watched files and directories configuration
+- Watched files and folders configuration
 
 ## Supported File Formats
 
@@ -231,7 +231,7 @@ node src/cli/mcp-cli.js call get_documents
 # Get chunks for a document
 node src/cli/mcp-cli.js call get_document_chunks --documentId "doc-123"
 
-# Ingest directory with watching
+# Ingest folder with watching
 node src/cli/mcp-cli.js call ingest_directory --dirPath "/path/to/docs" --recursive true --watch true
 ```
 

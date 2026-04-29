@@ -85,7 +85,7 @@ function createAdminHandlers(ragService, log) {
           return res.status(400).json({ error: 'dirPath is required' });
         }
         const target = resolveIngestOrStatsTarget(ragService, req.query.namespace);
-        log('info', 'Admin ingest directory', { dirPath, recursive, watch, namespace: target.namespace });
+        log('info', 'Admin ingest folder', { dirPath, recursive, watch, namespace: target.namespace });
         const opts = {};
         if (!target.usePrimary) {
           opts.targetDataDir = target.dataDir;
@@ -94,7 +94,7 @@ function createAdminHandlers(ragService, log) {
         const result = await ragService.ingestDirectory(dirPath, recursive, watch, opts);
         res.json(result);
       } catch (error) {
-        log('error', 'Admin ingest directory error', { error: error.message });
+        log('error', 'Admin ingest folder error', { error: error.message });
         const code = error.code === 'INVALID_NAMESPACE' || error.code === 'NAMESPACE_NOT_FOUND' ? 400 : 500;
         res.status(code).json({ error: error.message });
       }

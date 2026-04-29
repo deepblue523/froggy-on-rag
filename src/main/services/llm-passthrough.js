@@ -3,7 +3,11 @@
  */
 
 const { searchCorpusInNamespaces } = require('./mcp/corpus-namespace-query');
+const { inferDefaultCorpusNamespaceName } = require('./mcp/namespace-scope');
 const { searchGoogleCustomSearch } = require('./web-search');
+const path = require('path');
+const paths = require('../../paths');
+const { readJsonObject } = require('../../settings-files');
 
 function trimTrailingSlash(url) {
   return String(url || '').replace(/\/+$/, '');
@@ -32,6 +36,163 @@ function getActiveLlmPassthroughUpstream(settings) {
   return { provider: 'ollama', baseUrl, model, apiKey };
 }
 
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function appendSetValue(map, key, value) {
+  const entryKey = String(key || '').trim();
+  if (!entryKey) return;
+  const values = Array.isArray(value) ? value : [value];
+  if (!map.has(entryKey)) map.set(entryKey, new Set());
+  const bucket = map.get(entryKey);
+  for (const raw of values) {
+    const entryValue = String(raw || '').trim();
+    if (entryValue) bucket.add(entryValue);
+  }
+}
+
+function splitMetadataTagString(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const eq = text.indexOf('=');
+  const colon = text.indexOf(':');
+  const idx =
+    eq >= 0 && colon >= 0
+      ? Math.min(eq, colon)
+      : eq >= 0
+        ? eq
+        : colon;
+  if (idx <= 0) return null;
+  const key = text.slice(0, idx).trim();
+  const val = text.slice(idx + 1).trim();
+  return key && val ? { key, value: val } : null;
+}
+
+function collectMixedTags(value, simpleTags, metadata) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectMixedTags(item, simpleTags, metadata);
+    return;
+  }
+  if (typeof value === 'string') {
+    const parts = value.split(',').map((part) => part.trim()).filter(Boolean);
+    const entries = parts.length > 1 ? parts : [value.trim()];
+    for (const entry of entries) {
+      const metadataEntry = splitMetadataTagString(entry);
+      if (metadataEntry) appendSetValue(metadata, metadataEntry.key, metadataEntry.value);
+      else appendSetValue(simpleTags, 'tags', entry);
+    }
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, raw] of Object.entries(value)) {
+      if (key === 'tags' || key === 'tag') {
+        collectMixedTags(raw, simpleTags, metadata);
+      } else if (Array.isArray(raw)) {
+        appendSetValue(metadata, key, raw);
+      } else if (raw && typeof raw === 'object') {
+        appendSetValue(metadata, key, safeJson(raw));
+      } else {
+        appendSetValue(metadata, key, raw);
+      }
+    }
+  }
+}
+
+const METADATA_DISPLAY_EXCLUDE_KEYS = new Set([
+  'chunkGroupId',
+  'chunkIndex',
+  'chunkPart',
+  'createdAt',
+  'docProfile',
+  'fileName',
+  'filePath',
+  'fileSize',
+  'fileType',
+  'namespace',
+  'pages',
+  'sheetCount',
+  'tags'
+]);
+
+function collectTopLevelMetadata(meta, metadata) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return;
+  for (const [key, raw] of Object.entries(meta)) {
+    if (METADATA_DISPLAY_EXCLUDE_KEYS.has(key)) continue;
+    if (raw === undefined || raw === null || raw === '') continue;
+    if (Array.isArray(raw)) appendSetValue(metadata, key, raw);
+    else if (raw && typeof raw === 'object') appendSetValue(metadata, key, safeJson(raw));
+    else appendSetValue(metadata, key, raw);
+  }
+}
+
+function collectRetrievedMetadata(results) {
+  const simpleTags = new Map();
+  const metadata = new Map();
+  for (const r of results || []) {
+    const meta = r && r.metadata;
+    collectMixedTags(meta && meta.tags, simpleTags, metadata);
+    collectTopLevelMetadata(meta, metadata);
+    if (r && Array.isArray(r.chunks)) {
+      for (const ch of r.chunks) {
+        const chunkMeta = ch && ch.metadata;
+        collectMixedTags(chunkMeta && chunkMeta.tags, simpleTags, metadata);
+        collectTopLevelMetadata(chunkMeta, metadata);
+      }
+    }
+  }
+  return { simpleTags, metadata };
+}
+
+function formatMetadataMap(tagMap) {
+  const lines = [];
+  const entries =
+    tagMap instanceof Map
+      ? Array.from(tagMap.entries())
+      : tagMap && typeof tagMap === 'object'
+        ? Object.entries(tagMap).map(([key, value]) => [key, new Set(Array.isArray(value) ? value : [value])])
+        : [];
+  for (const [key, values] of entries) {
+    const joined = Array.from(values).map((v) => String(v || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)).join(', ');
+    if (joined) lines.push(`- ${key}: ${joined}`);
+  }
+  return lines;
+}
+
+function firstTagValues(tagMap) {
+  const first = tagMap.values().next();
+  if (first.done) return '';
+  return Array.from(first.value).sort((a, b) => a.localeCompare(b)).join(', ');
+}
+
+function buildRagMetadataSection(results, config) {
+  const retrieved = collectRetrievedMetadata(results);
+  const requestedTags = normalizeStringArray(config && config.requestedTags).join(', ') || 'none';
+  const requestMetadataLines = formatMetadataMap(config && config.metadata);
+  const retrievedTags = firstTagValues(retrieved.simpleTags);
+  const retrievedMetadataLines = formatMetadataMap(retrieved.metadata);
+  const namespace = String((config && config.namespace) || 'general').trim() || 'general';
+  const promptProfile = String((config && config.promptProfileName) || '').trim() || 'none';
+  return [
+    '[METADATA]',
+    'Request metadata:',
+    `- namespace: ${namespace}`,
+    `- requested tags: ${requestedTags}`,
+    `- prompt profile: ${promptProfile}`,
+    ...requestMetadataLines,
+    '',
+    'Retrieved Tags:',
+    ...(retrievedTags ? retrievedTags.split(', ').map((tag) => `- ${tag}`) : ['- none']),
+    '',
+    'Retrieved metadata:',
+    ...(retrievedMetadataLines.length ? retrievedMetadataLines : ['- none'])
+  ].join('\n');
+}
+
 function formatSearchHitsForContext(results) {
   if (!results || !results.length) {
     return '';
@@ -47,7 +208,9 @@ function formatSearchHitsForContext(results) {
       for (const ch of r.chunks) {
         const text = (ch && ch.content) || '';
         if (!text.trim()) continue;
-        blocks.push(`[${i++}] Source: ${src}\n${text.trim()}`);
+        const lines = [`[${i++}] Source: ${src}`];
+        lines.push(text.trim());
+        blocks.push(lines.join('\n'));
       }
     } else {
       const meta = r.metadata || {};
@@ -56,7 +219,9 @@ function formatSearchHitsForContext(results) {
       const src = `${baseSrc}${ns}`;
       const text = (r.content || '').trim();
       if (!text) continue;
-      blocks.push(`[${i++}] Source: ${src}\n${text}`);
+      const lines = [`[${i++}] Source: ${src}`];
+      lines.push(text);
+      blocks.push(lines.join('\n'));
     }
   }
   return blocks.join('\n\n---\n\n');
@@ -79,8 +244,12 @@ function combineContextBlocks(localContextBlock, webContextBlock) {
   return local || web;
 }
 
-async function getWebContextForPassthrough(settings, query, warnings) {
-  if (settings.llmPassthroughIncludeWebResults !== true) {
+async function getWebContextForPassthrough(settings, query, warnings, options = {}) {
+  const includeWebSearch =
+    typeof options.includeWebSearch === 'boolean'
+      ? options.includeWebSearch
+      : settings.llmPassthroughIncludeWebResults === true;
+  if (includeWebSearch !== true) {
     return '';
   }
   try {
@@ -100,6 +269,220 @@ function buildMessages(systemPreamble, userPrompt) {
     { role: 'system', content: systemPreamble },
     { role: 'user', content: userPrompt }
   ];
+}
+
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeFroggyPayload(value) {
+  if (!isPlainObject(value)) return {};
+  return value;
+}
+
+function normalizePositiveInt(value, fallback, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(max, Math.floor(n));
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => String(v || '').trim()).filter(Boolean);
+}
+
+function normalizeVariables(value) {
+  if (!isPlainObject(value)) return {};
+  const out = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+      out[key] = String(raw);
+    } else {
+      out[key] = safeJson(raw);
+    }
+  }
+  return out;
+}
+
+function applyPromptVariables(template, variables) {
+  const text = String(template || '');
+  if (!text || !variables || typeof variables !== 'object') return text;
+  return text.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}|\$\{\s*([A-Za-z0-9_.-]+)\s*\}/g, (match, a, b) => {
+    const key = a || b;
+    return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : match;
+  });
+}
+
+function promptProfileToText(profile) {
+  if (typeof profile === 'string') return profile;
+  if (Array.isArray(profile)) return normalizeStringArray(profile).join('\n');
+  if (!isPlainObject(profile)) return '';
+
+  const parts = [];
+  for (const key of ['body', 'system', 'prompt', 'template', 'instructions']) {
+    const value = profile[key];
+    if (typeof value === 'string' && value.trim()) {
+      parts.push(value.trim());
+    } else if (Array.isArray(value)) {
+      const lines = normalizeStringArray(value);
+      if (lines.length) parts.push(lines.join('\n'));
+    }
+  }
+  return parts.join('\n\n');
+}
+
+function readPromptProfileForNamespace(ragService, namespaceName, profileName) {
+  const name = String(profileName || '').trim();
+  if (!name) return { text: '', found: false };
+
+  let namespaceSettings = null;
+  const activeNamespace = inferDefaultCorpusNamespaceName(ragService);
+  if (!namespaceName || namespaceName === activeNamespace) {
+    namespaceSettings = ragService.getSettings();
+  } else if (paths.isValidNamespaceName(namespaceName)) {
+    namespaceSettings = readJsonObject(
+      path.join(paths.getDataDirForNamespace(namespaceName), 'namespace.json')
+    );
+  }
+
+  const profiles = namespaceSettings && isPlainObject(namespaceSettings.promptProfiles)
+    ? namespaceSettings.promptProfiles
+    : {};
+  if (!Object.prototype.hasOwnProperty.call(profiles, name)) {
+    return { text: '', found: false };
+  }
+  return { text: promptProfileToText(profiles[name]), found: true };
+}
+
+function buildRetrievalQuery(userQuery, tags) {
+  const cleanTags = normalizeStringArray(tags);
+  if (!cleanTags.length) return userQuery;
+  return `${userQuery}\n\nRequest tags: ${cleanTags.join(', ')}`;
+}
+
+function normalizeFroggyMetadata(value) {
+  if (!isPlainObject(value)) return {};
+  const out = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const cleanKey = String(key || '').trim();
+    if (!cleanKey || raw === undefined || raw === null || raw === '') continue;
+    if (Array.isArray(raw)) {
+      const values = raw.map((v) => String(v || '').trim()).filter(Boolean);
+      if (values.length) out[cleanKey] = values;
+    } else if (raw && typeof raw === 'object') {
+      out[cleanKey] = safeJson(raw);
+    } else {
+      out[cleanKey] = String(raw).trim();
+    }
+  }
+  return out;
+}
+
+function buildFroggyInstructionSections(promptProfileText, extraInstructions, tags) {
+  const sections = [];
+  const profile = String(promptProfileText || '').trim();
+  if (profile) {
+    sections.push(['### Prompt profile instructions', '', profile].join('\n'));
+  }
+  const extra = normalizeStringArray(extraInstructions);
+  if (extra.length) {
+    sections.push(['### Extra instructions', '', extra.map((line) => `- ${line}`).join('\n')].join('\n'));
+  }
+  const cleanTags = normalizeStringArray(tags);
+  if (cleanTags.length) {
+    sections.push(['### Request tags', '', cleanTags.join(', ')].join('\n'));
+  }
+  return sections.join('\n\n');
+}
+
+function buildSystemPreamble(contextForModel, promptSections, includeContext) {
+  const lines = [
+    'You are a helpful assistant.',
+    includeContext
+      ? 'Use the following retrieved context from indexed documents and web search when it helps answer the question.'
+      : 'Follow the Froggy request instructions when they are relevant to the user message.',
+    includeContext
+      ? 'If the context is irrelevant, say so briefly and answer without inventing retrieved details.'
+      : 'Do not invent facts that are not present in the conversation or your available knowledge.'
+  ];
+
+  const sections = String(promptSections || '').trim();
+  if (sections) {
+    lines.push('', sections);
+  }
+
+  if (includeContext) {
+    lines.push('', '### Retrieved context', '', contextForModel);
+  }
+  return lines.join('\n');
+}
+
+function resolveFroggyConfig(ragService, settings, inboundBody, options, defaultUserQuery) {
+  const froggy = normalizeFroggyPayload(
+    options && isPlainObject(options.froggy) ? options.froggy : inboundBody && inboundBody.froggy
+  );
+  const namespace =
+    typeof froggy.namespace === 'string' && froggy.namespace.trim()
+      ? froggy.namespace.trim()
+      : options.namespace !== undefined && options.namespace !== null && String(options.namespace).trim() !== ''
+        ? String(options.namespace).trim()
+        : 'general';
+  const topK = normalizePositiveInt(
+    froggy.topK !== undefined ? froggy.topK : options.topK,
+    settings.retrievalTopK || 10,
+    100
+  );
+  const algorithm =
+    typeof froggy.algorithm === 'string' && ALLOWED_ALGORITHMS.has(froggy.algorithm)
+      ? froggy.algorithm
+      : typeof options.algorithm === 'string' && ALLOWED_ALGORITHMS.has(options.algorithm)
+        ? options.algorithm
+        : settings.llmPassthroughSearchAlgorithm || 'hybrid';
+  const ragEnabled = froggy.rag === false ? false : true;
+  const includeMetadata = froggy.includeMetadata === true;
+  const includeWebSearch =
+    typeof froggy.includeWebSearch === 'boolean' ? froggy.includeWebSearch : false;
+  const tags = normalizeStringArray(froggy.tags);
+  const metadata = normalizeFroggyMetadata(froggy.metadata);
+  const filters = {};
+  if (tags.length) filters.tags = tags;
+  if (Object.keys(metadata).length) filters.metadata = metadata;
+  const requestedTags = tags;
+  const extraInstructions = normalizeStringArray(froggy.extraInstructions);
+  const variables = normalizeVariables(froggy.variables);
+  const promptProfileName =
+    typeof froggy.promptProfile === 'string' && froggy.promptProfile.trim()
+      ? froggy.promptProfile.trim()
+      : '';
+  const promptProfile = readPromptProfileForNamespace(ragService, namespace, promptProfileName);
+  const promptProfileText = applyPromptVariables(promptProfile.text, variables).trim();
+  const promptSections = buildFroggyInstructionSections(promptProfileText, extraInstructions, tags);
+  const warnings = [];
+  if (promptProfileName && !promptProfile.found) {
+    warnings.push(
+      namespace
+        ? `Prompt profile not found in namespace "${namespace}": ${promptProfileName}`
+        : `Prompt profile not found for active namespace: ${promptProfileName}`
+    );
+  }
+
+  return {
+    namespace,
+    topK,
+    algorithm,
+    ragEnabled,
+    includeMetadata,
+    includeWebSearch,
+    filters,
+    tags,
+    metadata,
+    requestedTags,
+    promptProfileName,
+    promptSections,
+    warnings,
+    retrievalQuery: buildRetrievalQuery(defaultUserQuery, tags)
+  };
 }
 
 /**
@@ -189,18 +572,13 @@ const ALLOWED_ALGORITHMS = new Set(['hybrid', 'bm25', 'tfidf', 'vector']);
 async function runLlmPassthrough(ragService, userPrompt, options = {}) {
   const settings = ragService.getSettings();
   if (!settings.llmPassthroughEnabled) {
-    throw new Error('LLM Passthrough is disabled. Enable it under Settings → Server.');
+    throw new Error('LLM Passthrough is disabled. Enable it under Settings → LLM Passthrough.');
   }
   const { provider, baseUrl, model, apiKey } = getActiveLlmPassthroughUpstream(settings);
   const timeoutMs =
     Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
       ? settings.llmPassthroughTimeoutMs
       : 120000;
-
-  let algorithm = settings.llmPassthroughSearchAlgorithm || 'hybrid';
-  if (typeof options.algorithm === 'string' && ALLOWED_ALGORITHMS.has(options.algorithm)) {
-    algorithm = options.algorithm;
-  }
 
   if (!baseUrl) {
     throw new Error('LLM Passthrough base URL is required.');
@@ -214,50 +592,59 @@ async function runLlmPassthrough(ragService, userPrompt, options = {}) {
     throw new Error('Prompt is empty.');
   }
 
-  let topK = settings.retrievalTopK || 10;
-  if (options.topK !== undefined && options.topK !== null) {
-    const t = Number(options.topK);
-    if (Number.isFinite(t) && t >= 1) {
-      topK = Math.min(100, Math.floor(t));
+  const froggyConfig = resolveFroggyConfig(
+    ragService,
+    settings,
+    options && options.froggy ? { froggy: options.froggy } : {},
+    options,
+    trimmedPrompt
+  );
+
+  let contextBlock = '';
+  let warnings = [...froggyConfig.warnings];
+  let errors = [];
+  let scope = undefined;
+  if (froggyConfig.ragEnabled) {
+    const searchOut = await searchCorpusInNamespaces(ragService, {
+      namespace: froggyConfig.namespace,
+      query: froggyConfig.retrievalQuery,
+      topK: froggyConfig.topK,
+      algorithm: froggyConfig.algorithm,
+      filters: froggyConfig.filters
+    });
+    warnings.push(...(Array.isArray(searchOut.warnings) ? searchOut.warnings : []));
+    errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
+    const hits = searchOut.results || [];
+    scope = searchOut.scope;
+    const localContextBlock = formatSearchHitsForContext(hits);
+    const webContextBlock = await getWebContextForPassthrough(
+      settings,
+      froggyConfig.retrievalQuery,
+      warnings,
+      { includeWebSearch: froggyConfig.includeWebSearch }
+    );
+    contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
+    if (froggyConfig.includeMetadata) {
+      contextBlock = [
+        buildRagMetadataSection(hits, froggyConfig),
+        contextBlock
+      ].filter(Boolean).join('\n\n');
     }
-  } else {
-    topK = Math.min(100, Math.max(1, Math.floor(topK)));
   }
-
-  const namespaceArg =
-    options.namespace !== undefined && options.namespace !== null && String(options.namespace).trim() !== ''
-      ? String(options.namespace).trim()
-      : undefined;
-
-  const searchOut = await searchCorpusInNamespaces(ragService, {
-    namespace: namespaceArg,
-    query: trimmedPrompt,
-    topK,
-    algorithm
-  });
-  const warnings = Array.isArray(searchOut.warnings) ? [...searchOut.warnings] : [];
-  const errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
-  const hits = searchOut.results || [];
-  const scope = searchOut.scope;
-  const localContextBlock = formatSearchHitsForContext(hits);
-  const webContextBlock = await getWebContextForPassthrough(settings, trimmedPrompt, warnings);
-  const contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
   const contextForModel =
     contextBlock ||
     'No relevant chunks were retrieved from the knowledge base or web search for this query. Answer using general knowledge and say that no retrieved context was found.';
 
-  const systemPreamble = [
-    'You are a helpful assistant.',
-    'The user message may be followed by instructions to use retrieved context.',
-    'Use the following retrieved context from indexed documents and web search when it helps answer the question.',
-    'If the context is irrelevant, say so briefly and answer without inventing retrieved details.',
-    '',
-    '### Retrieved context',
-    '',
-    contextForModel
-  ].join('\n');
+  const systemPreamble = buildSystemPreamble(
+    contextForModel,
+    froggyConfig.promptSections,
+    froggyConfig.ragEnabled
+  );
 
-  const messages = buildMessages(systemPreamble, trimmedPrompt);
+  const messages =
+    froggyConfig.ragEnabled || froggyConfig.promptSections
+      ? buildMessages(systemPreamble, trimmedPrompt)
+      : [{ role: 'user', content: trimmedPrompt }];
 
   let reply = '';
   if (provider === 'ollama') {
@@ -337,17 +724,15 @@ function getRagQueryFromMessages(messages) {
 /**
  * @param {{ role: string, content: string }[]} messages
  * @param {string} contextForModel
+ * @param {{ includeContext?: boolean, promptSections?: string }} [options]
  */
-function injectRagIntoMessages(messages, contextForModel) {
-  const ragBlock = [
-    'You are a helpful assistant.',
-    'Use the following retrieved context from indexed documents and web search when it helps answer the question.',
-    'If the context is irrelevant, say so briefly and answer without inventing retrieved details.',
-    '',
-    '### Retrieved context',
-    '',
-    contextForModel
-  ].join('\n');
+function injectRagIntoMessages(messages, contextForModel, options = {}) {
+  const includeContext = options.includeContext !== false;
+  const ragBlock = buildSystemPreamble(
+    contextForModel,
+    options.promptSections || '',
+    includeContext
+  );
 
   const copy = messages.map((m) => ({ ...m, content: m.content }));
   if (copy.length && copy[0].role === 'system') {
@@ -371,7 +756,7 @@ function injectRagIntoMessages(messages, contextForModel) {
 async function completeChatProxy(ragService, inboundBody, options = {}) {
   const settings = ragService.getSettings();
   if (!settings.llmPassthroughEnabled) {
-    throw new Error('LLM Passthrough is disabled. Enable it under Settings → Server.');
+    throw new Error('LLM Passthrough is disabled. Enable it under Settings → LLM Passthrough.');
   }
   const { provider: outbound, baseUrl, model: defaultModel, apiKey } =
     getActiveLlmPassthroughUpstream(settings);
@@ -379,11 +764,6 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
       ? settings.llmPassthroughTimeoutMs
       : 120000;
-
-  let algorithm = settings.llmPassthroughSearchAlgorithm || 'hybrid';
-  if (typeof options.algorithm === 'string' && ALLOWED_ALGORITHMS.has(options.algorithm)) {
-    algorithm = options.algorithm;
-  }
 
   if (!baseUrl) {
     throw new Error('LLM Passthrough base URL is required.');
@@ -411,42 +791,56 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     throw new Error('Could not derive a user message for RAG retrieval.');
   }
 
-  let topK = settings.retrievalTopK || 10;
-  if (options.topK !== undefined && options.topK !== null) {
-    const t = Number(options.topK);
-    if (Number.isFinite(t) && t >= 1) {
-      topK = Math.min(100, Math.floor(t));
-    }
-  } else {
-    topK = Math.min(100, Math.max(1, Math.floor(topK)));
-  }
-
-  const namespaceArg =
-    options.namespace !== undefined && options.namespace !== null && String(options.namespace).trim() !== ''
-      ? String(options.namespace).trim()
-      : undefined;
-
   const upstreamAbortSignal =
     options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined;
 
-  const searchOut = await searchCorpusInNamespaces(ragService, {
-    namespace: namespaceArg,
-    query: ragQuery,
-    topK,
-    algorithm
-  });
-  const warnings = Array.isArray(searchOut.warnings) ? [...searchOut.warnings] : [];
-  const errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
-  const hits = searchOut.results || [];
-  const scope = searchOut.scope;
-  const localContextBlock = formatSearchHitsForContext(hits);
-  const webContextBlock = await getWebContextForPassthrough(settings, ragQuery, warnings);
-  const contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
+  const froggyConfig = resolveFroggyConfig(ragService, settings, inboundBody, options, ragQuery);
+  let contextBlock = '';
+  let warnings = [...froggyConfig.warnings];
+  let errors = [];
+  let scope = undefined;
+  if (froggyConfig.ragEnabled) {
+    const searchOut = await searchCorpusInNamespaces(ragService, {
+      namespace: froggyConfig.namespace,
+      query: froggyConfig.retrievalQuery,
+      topK: froggyConfig.topK,
+      algorithm: froggyConfig.algorithm,
+      filters: froggyConfig.filters
+    });
+    warnings.push(...(Array.isArray(searchOut.warnings) ? searchOut.warnings : []));
+    errors = Array.isArray(searchOut.errors) ? [...searchOut.errors] : [];
+    const hits = searchOut.results || [];
+    scope = searchOut.scope;
+    const localContextBlock = formatSearchHitsForContext(hits);
+    const webContextBlock = await getWebContextForPassthrough(
+      settings,
+      froggyConfig.retrievalQuery,
+      warnings,
+      { includeWebSearch: froggyConfig.includeWebSearch }
+    );
+    contextBlock = combineContextBlocks(localContextBlock, webContextBlock);
+    if (froggyConfig.includeMetadata) {
+      contextBlock = [
+        buildRagMetadataSection(hits, froggyConfig),
+        contextBlock
+      ].filter(Boolean).join('\n\n');
+    }
+  }
   const contextForModel =
     contextBlock ||
     'No relevant chunks were retrieved from the knowledge base or web search for this query. Answer using general knowledge and say that no retrieved context was found.';
 
-  const augmented = injectRagIntoMessages(messages, contextForModel);
+  const augmented =
+    froggyConfig.ragEnabled || froggyConfig.promptSections
+      ? injectRagIntoMessages(
+          messages,
+          contextForModel,
+          {
+            includeContext: froggyConfig.ragEnabled,
+            promptSections: froggyConfig.promptSections
+          }
+        )
+      : messages.map((m) => ({ ...m, content: m.content }));
   const model =
     typeof inboundBody.model === 'string' && inboundBody.model.trim()
       ? inboundBody.model.trim()
@@ -508,5 +902,11 @@ module.exports = {
   normalizeChatMessages,
   getRagQueryFromMessages,
   injectRagIntoMessages,
-  getActiveLlmPassthroughUpstream
+  getActiveLlmPassthroughUpstream,
+  __testing: {
+    buildRagMetadataSection,
+    collectRetrievedMetadata,
+    normalizeFroggyMetadata,
+    resolveFroggyConfig
+  }
 };

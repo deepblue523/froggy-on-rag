@@ -17,6 +17,12 @@ const {
   MARKDOWN_EXT
 } = require('./document-chunk-strategies');
 
+const CHUNK_YIELD_INTERVAL = 25;
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 class DocumentProcessor {
   constructor(embeddingModel, normalizeEmbeddings = true) {
     this.embeddingModel = embeddingModel;
@@ -184,6 +190,8 @@ class DocumentProcessor {
       }
     }
 
+    await yieldToEventLoop();
+
     const effectiveSize = Math.max(200, profile.suggestedChunkSize || chunkSize);
     const wholeDocRatio = opt.chunkingWholeDocMaxRatio;
 
@@ -220,19 +228,23 @@ class DocumentProcessor {
     }
 
     const baseStrings = [];
-    for (const piece of stringPieces) {
+    for (let i = 0; i < stringPieces.length; i++) {
+      const piece = stringPieces[i];
       const parts = profile.kind === 'markdown'
         ? subdivideMarkdownUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t))
         : subdivideUnit(piece, effectiveSize, (t) => this.splitIntoSentences(t));
       baseStrings.push(...parts);
+      if ((i + 1) % CHUNK_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     let mergedByOverlap = profile.kind === 'markdown'
-      ? this._mergeMarkdownStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile)
-      : this._mergeStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile);
+      ? await this._mergeMarkdownStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile)
+      : await this._mergeStringsWithOverlap(baseStrings, effectiveSize, overlap, metadata, profile);
 
     if (opt.hierarchicalChunking && mergedByOverlap.length > 1) {
-      mergedByOverlap = this._addHierarchicalCoarseChunks(
+      mergedByOverlap = await this._addHierarchicalCoarseChunks(
         mergedByOverlap,
         opt.hierarchicalCoarseWindowParts,
         metadata,
@@ -273,12 +285,16 @@ class DocumentProcessor {
     return paragraphs;
   }
 
-  _mergeStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
+  async _mergeStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
     const sentencesFlat = [];
-    for (const s of strings) {
+    for (let i = 0; i < strings.length; i++) {
+      const s = strings[i];
       const parts = this.splitIntoSentences(s);
       if (parts.length === 0) sentencesFlat.push(s);
       else sentencesFlat.push(...parts);
+      if ((i + 1) % CHUNK_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     if (sentencesFlat.length === 0) {
@@ -303,7 +319,8 @@ class DocumentProcessor {
     let currentChunk = [];
     let currentLength = 0;
 
-    for (const sentence of sentencesFlat) {
+    for (let i = 0; i < sentencesFlat.length; i++) {
+      const sentence = sentencesFlat[i];
       const sentenceLength = sentence.length;
       if (currentLength + sentenceLength > chunkSize && currentChunk.length > 0) {
         chunks.push({
@@ -323,6 +340,9 @@ class DocumentProcessor {
       }
       currentChunk.push(sentence);
       currentLength += sentenceLength + 1;
+      if ((i + 1) % 100 === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     if (currentChunk.length > 0) {
@@ -342,7 +362,7 @@ class DocumentProcessor {
     return chunks;
   }
 
-  _mergeMarkdownStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
+  async _mergeMarkdownStringsWithOverlap(strings, chunkSize, overlap, metadata, profile) {
     const blocks = strings.map((s) => String(s || '').trim()).filter(Boolean);
     if (blocks.length === 0) return [];
 
@@ -376,7 +396,8 @@ class DocumentProcessor {
       return selected;
     };
 
-    for (const block of blocks) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
       const addLen = block.length + (current.length ? 2 : 0);
       if (current.length > 0 && currentLength + addLen > chunkSize) {
         chunks.push(makeChunk(current));
@@ -385,6 +406,9 @@ class DocumentProcessor {
       }
       current.push(block);
       currentLength += block.length + (current.length > 1 ? 2 : 0);
+      if ((i + 1) % CHUNK_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     if (current.length > 0) {
@@ -394,7 +418,7 @@ class DocumentProcessor {
     return chunks;
   }
 
-  _addHierarchicalCoarseChunks(fineChunks, windowParts, metadata, profile) {
+  async _addHierarchicalCoarseChunks(fineChunks, windowParts, metadata, profile) {
     const out = [];
     let idx = 0;
     for (let i = 0; i < fineChunks.length; i += windowParts) {
@@ -426,27 +450,33 @@ class DocumentProcessor {
           }
         });
       }
+      if (out.length % 100 === 0) {
+        await yieldToEventLoop();
+      }
     }
     return out;
   }
 
   async _finalizeChunks(chunks, minChunkChars, minChunkTokens, maxChunksPerDocument) {
-    let filteredChunks = chunks.filter((chunk) => {
+    let filteredChunks = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       const body = chunk.content;
       const charCount = body.length;
       const tokens = this.tokenizer.tokenize(body) || [];
       const tokenCount = tokens.length;
 
-      if (minChunkChars > 0 && charCount < minChunkChars) {
-        return false;
+      if (
+        !(minChunkChars > 0 && charCount < minChunkChars) &&
+        !(minChunkTokens > 0 && tokenCount < minChunkTokens)
+      ) {
+        filteredChunks.push(chunk);
       }
 
-      if (minChunkTokens > 0 && tokenCount < minChunkTokens) {
-        return false;
+      if ((i + 1) % 50 === 0) {
+        await yieldToEventLoop();
       }
-
-      return true;
-    });
+    }
 
     if (maxChunksPerDocument > 0 && filteredChunks.length > maxChunksPerDocument) {
       filteredChunks = filteredChunks.slice(0, maxChunksPerDocument);
@@ -474,7 +504,7 @@ class DocumentProcessor {
         );
 
         if (i + batchSize < filteredChunks.length) {
-          await new Promise((resolve) => setImmediate(resolve));
+          await yieldToEventLoop();
         }
       }
     }

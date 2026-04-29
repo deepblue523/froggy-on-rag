@@ -28,7 +28,7 @@ function mapSearchHit(r, namespace) {
 
 /**
  * @param {import('../rag-service')} ragService
- * @param {{ namespace?: unknown, query: string, topK: number, algorithm: string }} opts
+ * @param {{ namespace?: unknown, query: string, topK: number, algorithm: string, filters?: object }} opts
  */
 async function searchCorpusInNamespaces(ragService, opts) {
   const query = opts.query;
@@ -66,6 +66,10 @@ async function searchCorpusInNamespaces(ragService, opts) {
       searchOpts.corpusVectorStore = vs;
     }
     try {
+      searchOpts.topK = lim;
+      if (opts.filters && typeof opts.filters === 'object') {
+        searchOpts.filters = opts.filters;
+      }
       const payload = await ragService.search(query.trim(), lim, algorithm, searchOpts);
       warnings.push(...(payload.warnings || []));
       errors.push(...(payload.errors || []));

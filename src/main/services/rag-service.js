@@ -11,7 +11,7 @@ const { getAppSettingsPath } = require('../../paths');
 const { splitSettingsForPersist, writeAppAndNamespace, readMergedSettingsFromDisk } = require('../../settings-files');
 const { createLlmChunkAdvisor } = require('./llm-chunk-advisor');
 
-/** Extensions returned by directory scans and accepted by directory watchers (keep aligned with DocumentProcessor.processFile). */
+/** Extensions returned by folder scans and accepted by folder watchers (keep aligned with DocumentProcessor.processFile). */
 const SUPPORTED_INGEST_EXTENSIONS = [
   '.txt',
   '.pdf',
@@ -63,7 +63,7 @@ class RAGService extends EventEmitter {
     this.ingestionQueue = [];
     this.processing = false;
     this.activeProcessingCount = 0;
-    this.maxConcurrentProcessing = 3; // Process up to 3 files concurrently
+    this.maxConcurrentProcessing = 1; // Keep ingestion cooperative with the Electron main process
     
     // File watchers
     this.fileWatchers = new Map();
@@ -72,10 +72,10 @@ class RAGService extends EventEmitter {
     // Start processing queue
     this.startQueueProcessor();
     
-    // Restore watched files/directories
+    // Restore watched files/folders
     this.restoreWatchers();
     
-    // Sync watched files/directories with vector store on startup (non-blocking)
+    // Sync watched files/folders with vector store on startup (non-blocking)
     // Don't await - let it run in the background so app can start quickly
     this.syncWatchedFilesWithVectorStore().catch(err => {
       console.error('Error syncing watched files:', err);
@@ -283,7 +283,7 @@ class RAGService extends EventEmitter {
    */
   async ingestDirectory(dirPath, recursive = false, watch = false, options = {}) {
     if (!fs.existsSync(dirPath)) {
-      throw new Error(`Directory not found: ${dirPath}`);
+      throw new Error(`Folder not found: ${dirPath}`);
     }
 
     const targetDataDir = options.targetDataDir ? path.resolve(options.targetDataDir) : null;
@@ -352,7 +352,7 @@ class RAGService extends EventEmitter {
           }
         }
       } catch (error) {
-        console.error(`Error scanning directory ${dir}:`, error);
+        console.error(`Error scanning folder ${dir}:`, error);
       }
     };
 
@@ -450,16 +450,16 @@ class RAGService extends EventEmitter {
   }
 
   getDirectoryFiles(dirPath) {
-    // Normalize directory path for comparison (use path equality so we find the entry on all platforms)
+    // Normalize folder path for comparison (use path equality so we find the entry on all platforms)
     const normalizedDirPath = path.resolve(dirPath);
 
-    // Find the directory entry to get recursive setting (pathsEqual handles Windows casing)
+    // Find the folder entry to get recursive setting (pathsEqual handles Windows casing)
     const dirEntry = this.settings.directories.find(d => pathsEqual(d.path, normalizedDirPath));
     if (!dirEntry) {
       return [];
     }
 
-    // Find all supported files in the directory (respect recursive so child folders are included)
+    // Find all supported files in the folder (respect recursive so child folders are included)
     const files = this.findSupportedFiles(dirEntry.path, dirEntry.recursive || false);
     
     // Get ingestion status
@@ -535,7 +535,7 @@ class RAGService extends EventEmitter {
     // Normalize paths for comparison
     const normalizedDirPath = path.resolve(dirPath);
     
-    // Find the directory entry (might be stored with different path format)
+    // Find the folder entry (might be stored with different path format)
     const dirEntry = this.settings.directories.find(d => {
       const storedPath = path.resolve(d.path);
       return storedPath === normalizedDirPath;
@@ -553,13 +553,13 @@ class RAGService extends EventEmitter {
       this.unwatchDirectory(dirEntry.path);
     }
     
-    // Remove all files from this directory in the vector store
+    // Remove all files from this folder in the vector store
     const allDocuments = this.vectorStore.getDocuments();
     const normalizedDirPathWithSep = normalizedDirPath + path.sep;
     
     for (const doc of allDocuments) {
       const normalizedDocPath = path.resolve(doc.file_path);
-      // Check if document is within the directory being removed
+      // Check if document is within the folder being removed
       if (normalizedDocPath.startsWith(normalizedDirPathWithSep) || normalizedDocPath === normalizedDirPath) {
         this.vectorStore.deleteDocument(doc.id);
       }
@@ -633,7 +633,7 @@ class RAGService extends EventEmitter {
     // Normalize paths for comparison
     const normalizedDirPath = path.resolve(dirPath);
     
-    // Find the directory entry
+    // Find the folder entry
     const dirEntry = this.settings.directories.find(d => {
       const storedPath = path.resolve(d.path);
       return storedPath === normalizedDirPath;
@@ -655,13 +655,13 @@ class RAGService extends EventEmitter {
           }
         }
       } else if (!active && wasActive) {
-        // Deactivating: remove all files from this directory in the vector store
+        // Deactivating: remove all files from this folder in the vector store
         const allDocuments = this.vectorStore.getDocuments();
         const normalizedDirPathWithSep = normalizedDirPath + path.sep;
         
         for (const doc of allDocuments) {
           const normalizedDocPath = path.resolve(doc.file_path);
-          // Check if document is within the directory being deactivated
+          // Check if document is within the folder being deactivated
           if (normalizedDocPath.startsWith(normalizedDirPathWithSep) || normalizedDocPath === normalizedDirPath) {
             this.vectorStore.deleteDocument(doc.id);
           }
@@ -706,7 +706,7 @@ class RAGService extends EventEmitter {
   }
 
   watchDirectory(dirPath, recursive) {
-    // Normalize the directory path for consistent comparison
+    // Normalize the folder path for consistent comparison
     const normalizedDirPath = path.resolve(dirPath);
     
     if (this.directoryWatchers.has(normalizedDirPath)) {
@@ -728,7 +728,7 @@ class RAGService extends EventEmitter {
 
     watcher.on('add', (filePath) => {
       console.log(`[Watcher] File added: ${filePath}`);
-      // Find directory entry using normalized path comparison
+      // Find folder entry using normalized path comparison
       const dirEntry = this.settings.directories.find(d => {
         const normalized = path.resolve(d.path);
         return normalized === normalizedDirPath;
@@ -740,7 +740,7 @@ class RAGService extends EventEmitter {
           const fileDir = path.dirname(path.resolve(filePath));
           const watchDir = normalizedDirPath;
           if (fileDir !== watchDir) {
-            // File is in a subdirectory, skip it
+            // File is in a subfolder, skip it
             return;
           }
         }
@@ -754,7 +754,7 @@ class RAGService extends EventEmitter {
 
     watcher.on('change', (filePath) => {
       console.log(`[Watcher] File changed: ${filePath}`);
-      // Find directory entry using normalized path comparison
+      // Find folder entry using normalized path comparison
       const dirEntry = this.settings.directories.find(d => {
         const normalized = path.resolve(d.path);
         return normalized === normalizedDirPath;
@@ -766,7 +766,7 @@ class RAGService extends EventEmitter {
           const fileDir = path.dirname(path.resolve(filePath));
           const watchDir = normalizedDirPath;
           if (fileDir !== watchDir) {
-            // File is in a subdirectory, skip it
+            // File is in a subfolder, skip it
             return;
           }
         }
@@ -780,7 +780,7 @@ class RAGService extends EventEmitter {
 
     watcher.on('unlink', (filePath) => {
       console.log(`[Watcher] File deleted: ${filePath}`);
-      // File was deleted from watched directory, remove from vector store
+      // File was deleted from watched folder, remove from vector store
       const ext = path.extname(filePath).toLowerCase();
       if (SUPPORTED_INGEST_EXTENSIONS.includes(ext)) {
         const fileId = this.getFileId(filePath);
@@ -791,11 +791,11 @@ class RAGService extends EventEmitter {
     });
 
     watcher.on('error', (error) => {
-      console.error(`[Watcher] Error watching directory ${normalizedDirPath}:`, error);
+      console.error(`[Watcher] Error watching folder ${normalizedDirPath}:`, error);
     });
 
     watcher.on('ready', () => {
-      console.log(`[Watcher] Ready watching directory: ${normalizedDirPath} (recursive: ${recursive})`);
+      console.log(`[Watcher] Ready watching folder: ${normalizedDirPath} (recursive: ${recursive})`);
     });
 
     this.directoryWatchers.set(normalizedDirPath, watcher);
@@ -808,7 +808,7 @@ class RAGService extends EventEmitter {
     if (watcher) {
       watcher.close();
       this.directoryWatchers.delete(normalizedDirPath);
-      console.log(`[Watcher] Stopped watching directory: ${normalizedDirPath}`);
+      console.log(`[Watcher] Stopped watching folder: ${normalizedDirPath}`);
     }
   }
 
@@ -821,10 +821,10 @@ class RAGService extends EventEmitter {
       }
     }
 
-    // Restore directory watchers
+    // Restore folder watchers
     for (const dir of this.settings.directories || []) {
       if (dir.watch && fs.existsSync(dir.path)) {
-        console.log(`[Watcher] Restoring directory watcher: ${dir.path} (recursive: ${dir.recursive || false})`);
+        console.log(`[Watcher] Restoring folder watcher: ${dir.path} (recursive: ${dir.recursive || false})`);
         this.watchDirectory(dir.path, dir.recursive);
       }
     }
@@ -860,13 +860,14 @@ class RAGService extends EventEmitter {
     profiler?.mark('start');
     
     // Get retrieval settings from settings
-    const topK = this.settings.retrievalTopK || limit || 10;
+    const topK = options.topK || this.settings.retrievalTopK || limit || 10;
     const scoreThreshold = this.settings.retrievalScoreThreshold || 0;
     const maxChunksPerDoc = this.settings.retrievalMaxChunksPerDoc || 0;
     const groupByDoc = this.settings.retrievalGroupByDoc || false;
     const returnFullDocs = this.settings.retrievalReturnFullDocs || false;
     const maxContextTokens = this.settings.retrievalMaxContextTokens || 0;
     const dedupeChunkGroups = this.settings.retrievalDedupeChunkGroups !== false;
+    const filters = options.filters && typeof options.filters === 'object' ? options.filters : undefined;
 
     // Get metadata settings from settings
     const sinceDays = this.settings.metadataSinceDays || 0;
@@ -937,7 +938,8 @@ class RAGService extends EventEmitter {
         groupByDoc,
         returnFullDocs,
         maxContextTokens,
-        dedupeChunkGroups
+        dedupeChunkGroups,
+        filters
       },
       {
         sinceDays,
@@ -1047,7 +1049,7 @@ class RAGService extends EventEmitter {
   }
 
   async syncWatchedFilesWithVectorStore() {
-    console.log('Syncing watched files/directories with vector store...');
+    console.log('Syncing watched files/folders with vector store...');
     
     const watchedFilePaths = new Set();
     const watchedDirectories = new Set();
@@ -1059,7 +1061,7 @@ class RAGService extends EventEmitter {
       }
     }
     
-    // Collect all files from watched directories (only active ones)
+    // Collect all files from watched folders (only active ones)
     for (const dirEntry of this.settings.directories || []) {
       if (dirEntry.active !== false && fs.existsSync(dirEntry.path)) {
         watchedDirectories.add(path.resolve(dirEntry.path));
@@ -1125,7 +1127,7 @@ class RAGService extends EventEmitter {
       // Check if this document is from a watched path
       let isFromWatchedPath = watchedPathsSet.has(filePath);
       
-      // If not directly watched, check if it's within a watched directory
+      // If not directly watched, check if it's within a watched folder
       if (!isFromWatchedPath) {
         const normalizedDocPath = path.resolve(filePath);
         for (const watchedDir of watchedDirectories) {
@@ -1174,7 +1176,7 @@ class RAGService extends EventEmitter {
       }
     }
     
-    // Add files from directories (only active ones)
+    // Add files from folders (only active ones)
     for (const dirEntry of this.settings.directories || []) {
       if (dirEntry.active !== false && fs.existsSync(dirEntry.path)) {
         const files = this.findSupportedFiles(dirEntry.path, dirEntry.recursive || false);

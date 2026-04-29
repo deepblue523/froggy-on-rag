@@ -9,7 +9,7 @@
  *   name under the standard data root, that name is the **default** and all operations are
  *   scoped to that single corpus (same as pre-namespace-aware behavior).
  * - If `dataDir` is outside that layout (e.g. custom CLI `--data-path`), there is no inferred
- *   default; corpus reads/search aggregate **all** namespace directories that exist on disk
+ *   default; corpus reads/search aggregate **all** namespace folders that exist on disk
  *   (and ambiguous ID lookups without `namespace` return an error if multiple corpora match).
  *
  * When `namespace` is provided explicitly, only that corpus is used; the name must exist and

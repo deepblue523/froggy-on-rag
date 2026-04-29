@@ -7,11 +7,13 @@ let vectorStoreSplitterPosition = 280; // Height of documents panel (top) in vec
 let mruSearches = [];
 let selectedDocumentId = null;
 let selectedChunkId = null;
-let expandedDirectories = new Set(); // Track which directories are expanded
+let expandedDirectories = new Set(); // Track which folders are expanded
 let searchCancelled = false; // Track if search was cancelled
 let searchTimerInterval = null; // Timer interval for updating search time
 let searchStartTime = null; // Start time of current search
 let namespaceSelectProgrammatic = false;
+let promptProfilesNamespace = '';
+let promptProfileEditingOriginalName = '';
 /** @type {string | null} */
 let llmPassthroughReplyBlobUrl = null;
 
@@ -28,6 +30,290 @@ const LLM_INBOUND_TEST_HOST_MRU_NEW = '__mru_new__';
 const LLM_TESTER_CHATS_KEY = 'froggyLlmTesterChatsV1';
 const LLM_TESTER_MAX_CHATS = 35;
 const LLM_TESTER_MAX_MESSAGES = 100;
+const LLM_API_REQUESTS_KEY = 'froggyLlmApiRequestsV1';
+const LLM_API_MAX_REQUESTS = 10;
+const LLM_API_DEFAULT_REQUEST = {
+  messages: [{ role: 'user', content: 'Hello from Froggy raw API tester.' }],
+  stream: false
+};
+
+let llmApiControlsListenerBound = false;
+let llmApiSendAbortController = null;
+
+const TABLE_VIEW_STATE_KEY = 'froggyPersistentTableViewsV1';
+let tableViewState = loadPersistentTableViewState();
+let latestFiles = [];
+let latestDirectories = [];
+let latestDocuments = [];
+let latestDocumentChunks = [];
+let latestDocumentInfo = null;
+let latestSearchResults = [];
+
+const TABLE_COLUMNS = {
+  files: [
+    { key: 'path', label: 'File Path', value: file => file.path || '' },
+    { key: 'status', label: 'Status', value: file => file._displayStatus || '' },
+    { key: 'active', label: 'Active', value: file => file.active !== false ? 'checked active yes true' : 'inactive no false' },
+    { key: 'watch', label: 'Watch', value: file => file.watch ? 'checked watch yes true' : 'no false' },
+    { key: 'actions', label: 'Actions', filterable: false, sortable: false }
+  ],
+  directories: [
+    { key: 'path', label: 'Folder Path', value: dir => dir.path || '' },
+    { key: 'recursive', label: 'Recursive', value: dir => dir.recursive ? 'checked recursive yes true' : 'no false' },
+    { key: 'active', label: 'Active', value: dir => dir.active !== false ? 'checked active yes true' : 'inactive no false' },
+    { key: 'watch', label: 'Watch', value: dir => dir.watch ? 'checked watch yes true' : 'no false' },
+    { key: 'actions', label: 'Actions', filterable: false, sortable: false }
+  ],
+  directoryFiles: [
+    { key: 'name', label: 'File Name', value: file => file.name || '' },
+    { key: 'status', label: 'Status', value: file => file.status || '' }
+  ],
+  documents: [
+    { key: 'fileName', label: 'File Name', value: doc => doc.file_name || '' },
+    { key: 'type', label: 'Type', value: doc => doc.file_type || '' },
+    { key: 'status', label: 'Status', value: doc => doc.status || '' },
+    { key: 'lastUpdated', label: 'Last Updated', value: doc => doc.updated_at ? new Date(doc.updated_at).toLocaleString() : 'N/A', sortValue: doc => dateSortValue(doc.updated_at) },
+    { key: 'chunks', label: 'Chunks', value: doc => doc.chunk_count != null ? String(doc.chunk_count) : '-', sortValue: doc => numberSortValue(doc.chunk_count) }
+  ],
+  chunks: [
+    { key: 'index', label: 'Index', value: chunk => chunk.chunk_index ?? '', sortValue: chunk => numberSortValue(chunk.chunk_index) },
+    { key: 'preview', label: 'Preview', value: chunk => chunk.content || '' },
+    { key: 'metadata', label: 'Metadata', value: chunk => stringifyTableValue(chunk.metadata) },
+    { key: 'lastUpdated', label: 'Last Updated', value: chunk => chunk._lastUpdated || 'N/A', sortValue: chunk => chunk._lastUpdatedSort ?? '' },
+    { key: 'actions', label: 'Actions', filterable: false, sortable: false }
+  ],
+  searchResults: [
+    { key: 'score', label: 'Score', value: result => formatSearchScore(result), sortValue: result => numberSortValue(result.score) },
+    { key: 'algorithm', label: 'Algorithm', value: result => result.algorithm || 'Hybrid' },
+    { key: 'source', label: 'Source', value: result => result.metadata?.source === 'web' ? 'Web' : 'Local' },
+    { key: 'document', label: 'Document', value: result => result.metadata?.fileName || 'Unknown' },
+    { key: 'preview', label: 'Preview', value: result => result.content || '' }
+  ]
+};
+
+function loadPersistentTableViewState() {
+  try {
+    const raw = localStorage.getItem(TABLE_VIEW_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePersistentTableViewState() {
+  try {
+    localStorage.setItem(TABLE_VIEW_STATE_KEY, JSON.stringify(tableViewState));
+  } catch (e) {
+    console.warn('savePersistentTableViewState', e);
+  }
+}
+
+function getTableView(tableKey) {
+  if (!tableViewState[tableKey] || typeof tableViewState[tableKey] !== 'object') {
+    tableViewState[tableKey] = { sortKey: '', sortDirection: 'asc', filters: {} };
+  }
+  const view = tableViewState[tableKey];
+  if (!view.filters || typeof view.filters !== 'object' || Array.isArray(view.filters)) {
+    view.filters = {};
+  }
+  if (view.sortDirection !== 'desc') {
+    view.sortDirection = 'asc';
+  }
+  return view;
+}
+
+function stringifyTableValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function numberSortValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : Number.NEGATIVE_INFINITY;
+}
+
+function dateSortValue(value) {
+  const t = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+}
+
+function getTableColumnValue(row, column) {
+  if (!column) return '';
+  try {
+    const value = column.value ? column.value(row) : row?.[column.key];
+    return stringifyTableValue(value);
+  } catch {
+    return '';
+  }
+}
+
+function getTableColumnSortValue(row, column) {
+  if (!column) return '';
+  try {
+    if (column.sortValue) return column.sortValue(row);
+    return getTableColumnValue(row, column);
+  } catch {
+    return '';
+  }
+}
+
+function compareTableValues(a, b) {
+  const aNum = typeof a === 'number' ? a : Number(a);
+  const bNum = typeof b === 'number' ? b : Number(b);
+  if (Number.isFinite(aNum) && Number.isFinite(bNum)) {
+    return aNum - bNum;
+  }
+  return String(a ?? '').localeCompare(String(b ?? ''), undefined, {
+    numeric: true,
+    sensitivity: 'base'
+  });
+}
+
+function applyPersistentTableView(tableKey, rows, columns) {
+  const view = getTableView(tableKey);
+  const activeFilters = Object.entries(view.filters || {})
+    .map(([key, value]) => [key, String(value || '').trim().toLowerCase()])
+    .filter(([, value]) => value !== '');
+  let out = Array.isArray(rows) ? rows.slice() : [];
+
+  if (activeFilters.length) {
+    out = out.filter(row => activeFilters.every(([key, filterText]) => {
+      const column = columns.find(c => c.key === key);
+      return getTableColumnValue(row, column).toLowerCase().includes(filterText);
+    }));
+  }
+
+  const sortColumn = columns.find(c => c.key === view.sortKey && c.sortable !== false);
+  if (sortColumn) {
+    const direction = view.sortDirection === 'desc' ? -1 : 1;
+    out = out
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const cmp = compareTableValues(
+          getTableColumnSortValue(a.row, sortColumn),
+          getTableColumnSortValue(b.row, sortColumn)
+        );
+        return cmp === 0 ? a.index - b.index : cmp * direction;
+      })
+      .map(item => item.row);
+  }
+
+  return out;
+}
+
+function updatePersistentTableIndicators(table, tableKey, columns) {
+  if (!table) return;
+  const view = getTableView(tableKey);
+  const headerRow = table.tHead?.rows?.[0];
+  if (!headerRow) return;
+
+  columns.forEach((column, index) => {
+    const th = headerRow.cells[index];
+    if (!th) return;
+    const indicator = th.querySelector('.sort-indicator');
+    if (!indicator) return;
+    indicator.textContent = view.sortKey === column.key
+      ? (view.sortDirection === 'desc' ? '▼' : '▲')
+      : '';
+  });
+}
+
+function setupPersistentTableControls(table, tableKey, columns, onChange) {
+  if (!table || table.dataset.persistentTableViewSetup === tableKey) {
+    updatePersistentTableIndicators(table, tableKey, columns);
+    return;
+  }
+  const headerRow = table.tHead?.rows?.[0];
+  if (!headerRow) return;
+  const view = getTableView(tableKey);
+
+  table.dataset.persistentTableViewSetup = tableKey;
+  table.classList.add('persistent-table-view');
+
+  columns.forEach((column, index) => {
+    const th = headerRow.cells[index];
+    if (!th) return;
+    th.dataset.tableColumn = column.key;
+    if (column.sortable !== false) {
+      th.classList.add('sortable-column');
+      th.tabIndex = 0;
+      th.title = `Sort by ${column.label}`;
+      const indicator = document.createElement('span');
+      indicator.className = 'sort-indicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      th.appendChild(indicator);
+      const toggleSort = () => {
+        const current = getTableView(tableKey);
+        if (current.sortKey === column.key) {
+          current.sortDirection = current.sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+          current.sortKey = column.key;
+          current.sortDirection = 'asc';
+        }
+        savePersistentTableViewState();
+        updatePersistentTableIndicators(table, tableKey, columns);
+        onChange();
+      };
+      th.addEventListener('click', toggleSort);
+      th.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleSort();
+        }
+      });
+    }
+  });
+
+  const filterRow = document.createElement('tr');
+  filterRow.className = 'table-filter-row';
+  columns.forEach(column => {
+    const th = document.createElement('th');
+    if (column.filterable !== false) {
+      const input = document.createElement('input');
+      input.type = 'search';
+      input.value = view.filters[column.key] || '';
+      input.placeholder = `Filter ${column.label}`;
+      input.setAttribute('aria-label', `Filter ${column.label}`);
+      input.addEventListener('click', e => e.stopPropagation());
+      input.addEventListener('input', () => {
+        const current = getTableView(tableKey);
+        const value = input.value.trim();
+        if (value) {
+          current.filters[column.key] = value;
+        } else {
+          delete current.filters[column.key];
+        }
+        savePersistentTableViewState();
+        onChange();
+      });
+      th.appendChild(input);
+    }
+    filterRow.appendChild(th);
+  });
+  table.tHead.appendChild(filterRow);
+  updatePersistentTableIndicators(table, tableKey, columns);
+}
+
+function formatSearchScore(result) {
+  if (!result || result.score === undefined || result.score === null) return 'N/A';
+  if (result.algorithm === 'Vector' || result.algorithm === 'Hybrid') {
+    return `${(result.score * 100).toFixed(4)}%`;
+  }
+  return Number(result.score).toFixed(4);
+}
+
+function setLlmRequestProcessingCursor(active) {
+  if (!document.body) return;
+  document.body.classList.toggle('llm-request-processing', active === true);
+}
 
 function randomLlmTesterChatId() {
   return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
@@ -110,6 +396,116 @@ function saveLlmTesterChatStore(store) {
   } catch (e) {
     console.warn('saveLlmTesterChatStore', e);
   }
+}
+
+function randomLlmApiRequestId() {
+  return `api_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function formatJsonForDisplay(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value || '');
+  }
+}
+
+function sanitizeLlmApiHistoryItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const requestText = typeof item.requestText === 'string' ? item.requestText : '';
+  if (!requestText.trim()) return null;
+  const id = typeof item.id === 'string' && item.id ? item.id : randomLlmApiRequestId();
+  const kind = item.kind === 'openai' || item.kind === 'ollama' ? item.kind : 'auto';
+  const updatedAt = Number.isFinite(item.updatedAt) ? item.updatedAt : Date.now();
+  return {
+    id,
+    kind,
+    targetUrl: typeof item.targetUrl === 'string' ? item.targetUrl : '',
+    requestText,
+    responseStatus: Number.isFinite(item.responseStatus) ? item.responseStatus : null,
+    responseOk: item.responseOk === true,
+    responseText: typeof item.responseText === 'string' ? item.responseText : '',
+    updatedAt
+  };
+}
+
+function loadLlmApiHistory() {
+  try {
+    const raw = localStorage.getItem(LLM_API_REQUESTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.items) ? parsed.items : [];
+    return arr
+      .map(sanitizeLlmApiHistoryItem)
+      .filter(Boolean)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, LLM_API_MAX_REQUESTS);
+  } catch {
+    return [];
+  }
+}
+
+function saveLlmApiHistory(items) {
+  const clean = (Array.isArray(items) ? items : [])
+    .map(sanitizeLlmApiHistoryItem)
+    .filter(Boolean)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, LLM_API_MAX_REQUESTS);
+  try {
+    localStorage.setItem(LLM_API_REQUESTS_KEY, JSON.stringify(clean));
+  } catch (e) {
+    console.warn('saveLlmApiHistory', e);
+  }
+  return clean;
+}
+
+function getDefaultLlmApiRequestText() {
+  return formatJsonForDisplay(LLM_API_DEFAULT_REQUEST);
+}
+
+function renderLlmApiHistorySelect() {
+  const sel = document.getElementById('llm-api-history-select');
+  if (!sel) return;
+  const history = loadLlmApiHistory();
+  sel.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = history.length ? 'Choose a recent request…' : 'No recent requests';
+  sel.appendChild(placeholder);
+  for (const item of history) {
+    const opt = document.createElement('option');
+    opt.value = item.id;
+    const d = new Date(item.updatedAt);
+    const timeStr = d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    let summary = item.requestText.trim().replace(/\s+/g, ' ');
+    if (summary.length > 70) summary = `${summary.slice(0, 67)}...`;
+    opt.textContent = `${item.kind === 'openai' ? 'OpenAI' : item.kind === 'ollama' ? 'Ollama' : 'Auto'} — ${timeStr} — ${summary}`;
+    sel.appendChild(opt);
+  }
+  sel.value = '';
+}
+
+function setLlmApiResponse(statusText, bodyText) {
+  const statusEl = document.getElementById('llm-api-send-status');
+  const bodyEl = document.getElementById('llm-api-response-body');
+  if (statusEl) statusEl.textContent = statusText || '';
+  if (bodyEl) bodyEl.textContent = bodyText || '';
+}
+
+function recordLlmApiHistoryItem(item) {
+  const history = loadLlmApiHistory().filter((x) => x.requestText !== item.requestText || x.kind !== item.kind);
+  history.unshift({
+    ...item,
+    id: randomLlmApiRequestId(),
+    updatedAt: Date.now()
+  });
+  saveLlmApiHistory(history);
+  renderLlmApiHistorySelect();
 }
 
 function getActiveLlmTesterChatEntry(store) {
@@ -216,43 +612,53 @@ function setupLlmCanvasTabsOnce() {
   if (llmCanvasTabsListenerBound) return;
   const btnSettings = document.getElementById('llm-canvas-tab-settings-btn');
   const btnChat = document.getElementById('llm-canvas-tab-chat-btn');
+  const btnApi = document.getElementById('llm-canvas-tab-api-btn');
   const panelSettings = document.getElementById('llm-canvas-panel-settings');
   const panelChat = document.getElementById('llm-canvas-panel-chat');
-  if (!btnSettings || !btnChat || !panelSettings || !panelChat) return;
+  const panelApi = document.getElementById('llm-canvas-panel-api');
+  if (!btnSettings || !btnChat || !btnApi || !panelSettings || !panelChat || !panelApi) return;
   llmCanvasTabsListenerBound = true;
 
   /**
-   * @param {'settings' | 'chat'} which
+   * @param {'settings' | 'chat' | 'api'} which
    */
   function activateLlmCanvasTab(which) {
-    const chat = which === 'chat';
-    btnSettings.classList.toggle('is-active', !chat);
-    btnChat.classList.toggle('is-active', chat);
-    btnSettings.setAttribute('aria-selected', chat ? 'false' : 'true');
-    btnChat.setAttribute('aria-selected', chat ? 'true' : 'false');
-    btnSettings.tabIndex = chat ? -1 : 0;
-    btnChat.tabIndex = chat ? 0 : -1;
-    panelSettings.hidden = chat;
-    panelChat.hidden = !chat;
+    const entries = [
+      { key: 'settings', btn: btnSettings, panel: panelSettings },
+      { key: 'chat', btn: btnChat, panel: panelChat },
+      { key: 'api', btn: btnApi, panel: panelApi }
+    ];
+    for (const entry of entries) {
+      const active = entry.key === which;
+      entry.btn.classList.toggle('is-active', active);
+      entry.btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      entry.btn.tabIndex = active ? 0 : -1;
+      entry.panel.hidden = !active;
+    }
+    if (which === 'api') {
+      void refreshLlmApiPanel();
+    }
   }
 
   btnSettings.addEventListener('click', () => activateLlmCanvasTab('settings'));
   btnChat.addEventListener('click', () => activateLlmCanvasTab('chat'));
+  btnApi.addEventListener('click', () => activateLlmCanvasTab('api'));
 
-  btnSettings.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+  const tabOrder = [
+    { key: 'settings', btn: btnSettings },
+    { key: 'chat', btn: btnChat },
+    { key: 'api', btn: btnApi }
+  ];
+  for (let i = 0; i < tabOrder.length; i++) {
+    tabOrder[i].btn.addEventListener('keydown', (e) => {
+      if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) return;
       e.preventDefault();
-      activateLlmCanvasTab('chat');
-      btnChat.focus();
-    }
-  });
-  btnChat.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      activateLlmCanvasTab('settings');
-      btnSettings.focus();
-    }
-  });
+      const delta = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
+      const next = tabOrder[(i + delta + tabOrder.length) % tabOrder.length];
+      activateLlmCanvasTab(next.key);
+      next.btn.focus();
+    });
+  }
 }
 
 function setupLlmTesterChatControlsOnce() {
@@ -381,6 +787,7 @@ async function reloadNamespaceContext() {
   await checkAndAutoStartServer();
   if (currentCanvas === 'llm') {
     void refreshLlmPassthroughPanel();
+    void refreshLlmApiPanel();
   }
 }
 
@@ -394,6 +801,160 @@ function openNamespacesModal() {
 function closeNamespacesModal() {
   const overlay = document.getElementById('namespaces-modal-overlay');
   if (overlay) overlay.style.display = 'none';
+  const panel = document.getElementById('namespace-prompt-profiles-panel');
+  if (panel) panel.style.display = 'none';
+  promptProfilesNamespace = '';
+  resetPromptProfileEditor();
+}
+
+function normalizePromptProfilesForDisplay(promptProfiles) {
+  if (!promptProfiles || typeof promptProfiles !== 'object' || Array.isArray(promptProfiles)) return [];
+  return Object.entries(promptProfiles)
+    .map(([key, profile]) => {
+      const name =
+        profile && typeof profile === 'object' && !Array.isArray(profile) && profile.name
+          ? String(profile.name).trim()
+          : String(key).trim();
+      const body =
+        profile && typeof profile === 'object' && !Array.isArray(profile)
+          ? String(profile.body || '')
+          : String(profile || '');
+      return name ? { name, body } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function setPromptProfileEditorStatus(text) {
+  const status = document.getElementById('namespace-prompt-profile-status');
+  if (status) status.textContent = text || '';
+}
+
+function resetPromptProfileEditor() {
+  promptProfileEditingOriginalName = '';
+  const nameInput = document.getElementById('namespace-prompt-profile-name');
+  const bodyInput = document.getElementById('namespace-prompt-profile-body');
+  const saveBtn = document.getElementById('namespace-prompt-profile-save-btn');
+  const cancelBtn = document.getElementById('namespace-prompt-profile-cancel-btn');
+  if (nameInput) nameInput.value = '';
+  if (bodyInput) bodyInput.value = '';
+  if (saveBtn) saveBtn.textContent = 'Add profile';
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  setPromptProfileEditorStatus('');
+}
+
+async function renderPromptProfilesForNamespace(namespaceName, promptProfiles) {
+  const panel = document.getElementById('namespace-prompt-profiles-panel');
+  const title = document.getElementById('namespace-prompt-profiles-title');
+  const listEl = document.getElementById('namespace-prompt-profiles-list');
+  if (!panel || !title || !listEl) return;
+  promptProfilesNamespace = namespaceName;
+  panel.style.display = 'block';
+  title.textContent = `Prompt Profiles: ${namespaceName}`;
+  listEl.replaceChildren();
+
+  let profiles = normalizePromptProfilesForDisplay(promptProfiles);
+  if (!promptProfiles) {
+    const res = await window.electronAPI.getNamespacePromptProfiles(namespaceName);
+    if (!res || !res.ok) {
+      listEl.textContent = res && res.error ? res.error : 'Could not load prompt profiles.';
+      return;
+    }
+    profiles = normalizePromptProfilesForDisplay(res.promptProfiles);
+  }
+
+  if (!profiles.length) {
+    const empty = document.createElement('div');
+    empty.className = 'namespace-prompt-profile-empty';
+    empty.textContent = 'No prompt profiles yet.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  for (const profile of profiles) {
+    const row = document.createElement('div');
+    row.className = 'namespace-prompt-profile-row';
+    const info = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'namespace-prompt-profile-row-name';
+    name.textContent = profile.name;
+    const meta = document.createElement('div');
+    meta.className = 'namespace-prompt-profile-row-meta';
+    meta.textContent = `${profile.body.length} characters`;
+    info.appendChild(name);
+    info.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'namespace-prompt-profile-row-actions';
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn btn-secondary btn-sm';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => {
+      promptProfileEditingOriginalName = profile.name;
+      const nameInput = document.getElementById('namespace-prompt-profile-name');
+      const bodyInput = document.getElementById('namespace-prompt-profile-body');
+      const saveBtn = document.getElementById('namespace-prompt-profile-save-btn');
+      const cancelBtn = document.getElementById('namespace-prompt-profile-cancel-btn');
+      if (nameInput) nameInput.value = profile.name;
+      if (bodyInput) bodyInput.value = profile.body;
+      if (saveBtn) saveBtn.textContent = 'Save profile';
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+      setPromptProfileEditorStatus(`Editing "${profile.name}".`);
+    });
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn btn-danger btn-sm';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', async () => {
+      if (!confirm(`Delete prompt profile "${profile.name}" from namespace "${namespaceName}"?`)) return;
+      const res = await window.electronAPI.deleteNamespacePromptProfile(namespaceName, profile.name);
+      if (!res || !res.ok) {
+        alert(res && res.error ? res.error : 'Delete failed');
+        return;
+      }
+      if (promptProfileEditingOriginalName === profile.name) resetPromptProfileEditor();
+      await renderPromptProfilesForNamespace(namespaceName, res.promptProfiles);
+      setPromptProfileEditorStatus('Deleted.');
+    });
+    actions.appendChild(editBtn);
+    actions.appendChild(deleteBtn);
+    row.appendChild(info);
+    row.appendChild(actions);
+    listEl.appendChild(row);
+  }
+}
+
+async function openPromptProfilesForNamespace(namespaceName) {
+  resetPromptProfileEditor();
+  await renderPromptProfilesForNamespace(namespaceName);
+}
+
+async function savePromptProfileFromEditor() {
+  if (!promptProfilesNamespace) {
+    alert('Choose a namespace first.');
+    return;
+  }
+  const nameInput = document.getElementById('namespace-prompt-profile-name');
+  const bodyInput = document.getElementById('namespace-prompt-profile-body');
+  const name = nameInput ? String(nameInput.value || '').trim() : '';
+  const body = bodyInput ? String(bodyInput.value || '') : '';
+  if (!name) {
+    alert('Enter a prompt profile name.');
+    return;
+  }
+  const res = await window.electronAPI.saveNamespacePromptProfile(
+    promptProfilesNamespace,
+    { name, body },
+    promptProfileEditingOriginalName
+  );
+  if (!res || !res.ok) {
+    alert(res && res.error ? res.error : 'Could not save prompt profile');
+    return;
+  }
+  resetPromptProfileEditor();
+  await renderPromptProfilesForNamespace(promptProfilesNamespace, res.promptProfiles);
+  setPromptProfileEditorStatus('Saved.');
 }
 
 async function renderNamespacesManageList() {
@@ -416,6 +977,13 @@ async function renderNamespacesManageList() {
     }
     const actions = document.createElement('span');
     actions.className = 'ns-actions';
+    const promptProfilesBtn = document.createElement('button');
+    promptProfilesBtn.type = 'button';
+    promptProfilesBtn.className = 'btn btn-secondary btn-sm';
+    promptProfilesBtn.textContent = 'Prompt profiles';
+    promptProfilesBtn.addEventListener('click', async () => {
+      await openPromptProfilesForNamespace(n);
+    });
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.className = 'btn btn-secondary btn-sm';
@@ -449,6 +1017,7 @@ async function renderNamespacesManageList() {
       await populateNamespaceSelect();
       await renderNamespacesManageList();
     });
+    actions.appendChild(promptProfilesBtn);
     actions.appendChild(renameBtn);
     actions.appendChild(deleteBtn);
     li.appendChild(nameSpan);
@@ -687,10 +1256,10 @@ async function initializeApp() {
 
   window.electronAPI.onIngestionUpdate(async (data) => {
     await refreshFiles();
-    // Refresh directories but preserve expanded state
+    // Refresh folders but preserve expanded state
     const currentlyExpanded = Array.from(expandedDirectories);
     await refreshDirectories();
-    // Re-expand directories that were expanded (refreshDirectories already does this, but ensure it's done)
+    // Re-expand folders that were expanded (refreshDirectories already does this, but ensure it's done)
     // The expandedDirectories set is maintained in refreshDirectories
     // Always refresh vector store when ingestion updates occur (file added/removed/changed)
     await refreshVectorStore();
@@ -781,6 +1350,29 @@ function setupEventListeners() {
     });
   }
 
+  const promptProfilesCloseBtn = document.getElementById('namespace-prompt-profiles-close-btn');
+  if (promptProfilesCloseBtn) {
+    promptProfilesCloseBtn.addEventListener('click', () => {
+      const panel = document.getElementById('namespace-prompt-profiles-panel');
+      if (panel) panel.style.display = 'none';
+      promptProfilesNamespace = '';
+      resetPromptProfileEditor();
+    });
+  }
+  const promptProfileSaveBtn = document.getElementById('namespace-prompt-profile-save-btn');
+  if (promptProfileSaveBtn) {
+    promptProfileSaveBtn.addEventListener('click', () => {
+      void savePromptProfileFromEditor();
+    });
+  }
+  const promptProfileCancelBtn = document.getElementById('namespace-prompt-profile-cancel-btn');
+  if (promptProfileCancelBtn) {
+    promptProfileCancelBtn.addEventListener('click', () => {
+      resetPromptProfileEditor();
+    });
+    promptProfileCancelBtn.style.display = 'none';
+  }
+
   // Settings button
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) {
@@ -815,13 +1407,18 @@ function setupEventListeners() {
   document.getElementById('file-input').addEventListener('change', async (e) => {
     const files = Array.from(e.target.files);
     for (const file of files) {
-      await window.electronAPI.ingestFile(file.path, false);
+      const filePath = resolveDroppedFilePath(file);
+      if (!filePath) {
+        console.warn('Add File: missing filesystem path for', file?.name);
+        continue;
+      }
+      await window.electronAPI.ingestFile(filePath, false);
     }
     await refreshFiles();
     e.target.value = '';
   });
 
-  // Directory management
+  // Folder management
   document.getElementById('add-directory-btn').addEventListener('click', async () => {
     const dirPath = await window.electronAPI.showDirectoryDialog();
     if (dirPath) {
@@ -923,6 +1520,7 @@ function setupEventListeners() {
 
   setupLlmTesterChatControlsOnce();
   setupLlmCanvasTabsOnce();
+  setupLlmApiControlsOnce();
 
   const llmPassthroughEnabledInput = document.getElementById('settings-llm-passthrough-enabled-input');
   if (llmPassthroughEnabledInput) {
@@ -1089,7 +1687,7 @@ function setupEventListeners() {
             renderLlmTesterTranscript();
             if (promptEl) promptEl.value = userContent;
             alert(
-              'No inbound passthrough listener is available. Under Settings → Server, enable LLM Passthrough, turn on at least one inbound listener (Ollama-style or OpenAI-compatible), save, and confirm the Server status shows listening. Or choose “Direct IPC” under Test transport to skip HTTP.'
+              'No inbound passthrough listener is available. Under Settings → LLM Passthrough, enable LLM Passthrough, turn on at least one inbound listener (Ollama-style or OpenAI-compatible), save, and confirm the Server status shows listening. Or choose “Direct IPC” under Test transport to skip HTTP.'
             );
             if (statusEl) statusEl.textContent = '';
             return;
@@ -1518,9 +2116,11 @@ function showCanvas(canvasName) {
     case 'llm':
       document.getElementById('llm-canvas').style.display = 'block';
       setupLlmTesterChatControlsOnce();
+      setupLlmApiControlsOnce();
       refreshLlmTesterChatPanel();
       void loadLlmTestPanelRetrievalSettings();
       void refreshLlmPassthroughPanel();
+      void refreshLlmApiPanel();
       break;
     case 'server':
       document.getElementById('server-canvas').style.display = 'block';
@@ -1532,16 +2132,34 @@ function showCanvas(canvasName) {
 
 async function refreshFiles() {
   const files = await window.electronAPI.getFiles();
-  const tbody = document.getElementById('files-tbody');
   const status = await window.electronAPI.getIngestionStatus();
-  
+  latestFiles = files.map(file => {
+    const queueItem = status.queue.find(q => q.filePath === file.path);
+    return {
+      ...file,
+      _displayStatus: file.active === false ? 'inactive' : (queueItem ? queueItem.status : 'completed')
+    };
+  });
+  renderFilesTable();
+}
+
+function renderFilesTable() {
+  const tbody = document.getElementById('files-tbody');
+  if (!tbody) return;
+  const table = tbody.closest('table');
+  setupPersistentTableControls(table, 'files', TABLE_COLUMNS.files, renderFilesTable);
+
   tbody.innerHTML = '';
-  
+
+  const files = applyPersistentTableView('files', latestFiles, TABLE_COLUMNS.files);
+  if (files.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #757575;">No files match the current filters.</td></tr>';
+    return;
+  }
+
   files.forEach(file => {
     const row = document.createElement('tr');
-    const queueItem = status.queue.find(q => q.filePath === file.path);
-    // If file is inactive, show "inactive" status, otherwise show queue status or "completed"
-    const fileStatus = file.active === false ? 'inactive' : (queueItem ? queueItem.status : 'completed');
+    const fileStatus = file._displayStatus || 'completed';
     
     // Escape HTML and JavaScript in file path
     const escapedPath = file.path.replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -1578,12 +2196,28 @@ async function refreshFiles() {
 
 async function refreshDirectories() {
   const directories = await window.electronAPI.getDirectories();
+  latestDirectories = directories;
+  await renderDirectoriesTable();
+}
+
+async function renderDirectoriesTable() {
   const tbody = document.getElementById('directories-tbody');
+  if (!tbody) return;
+  const table = tbody.closest('table');
+  setupPersistentTableControls(table, 'directories', TABLE_COLUMNS.directories, () => {
+    void renderDirectoriesTable();
+  });
   
   tbody.innerHTML = '';
-  
+
+  const directories = applyPersistentTableView('directories', latestDirectories, TABLE_COLUMNS.directories);
+  if (directories.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #757575;">No folders match the current filters.</td></tr>';
+    return;
+  }
+
   for (const dir of directories) {
-    // Create directory row
+    // Create folder row
     const row = document.createElement('tr');
     row.className = 'directory-row';
     row.dataset.dirPath = dir.path;
@@ -1661,7 +2295,7 @@ async function refreshDirectories() {
     
     tbody.appendChild(row);
     
-    // If this directory was expanded, show its files
+    // If this folder was expanded, show its files
     if (expandedDirectories.has(dir.path)) {
       await showDirectoryFiles(dir.path, row);
     }
@@ -1698,10 +2332,10 @@ async function showDirectoryFiles(dirPath, directoryRow) {
     filesRow.className = 'directory-files-row';
     
     const filesCell = document.createElement('td');
-    filesCell.colSpan = 4; // Span all columns
+    filesCell.colSpan = 5; // Span all folder columns
     
     if (files.length === 0) {
-      filesCell.innerHTML = '<div class="directory-files-empty">No files found in this directory</div>';
+      filesCell.innerHTML = '<div class="directory-files-empty">No files found in this folder</div>';
     } else {
       const filesTable = document.createElement('table');
       filesTable.className = 'directory-files-table';
@@ -1714,22 +2348,38 @@ async function showDirectoryFiles(dirPath, directoryRow) {
         </tr>
       `;
       filesTable.appendChild(thead);
-      
       const tbody = document.createElement('tbody');
-      files.forEach(file => {
-        const fileRow = document.createElement('tr');
-        const nameCell = document.createElement('td');
-        nameCell.textContent = file.name;
-        const statusCell = document.createElement('td');
-        const statusBadge = document.createElement('span');
-        statusBadge.className = `status-badge status-${file.status}`;
-        statusBadge.textContent = file.status;
-        statusCell.appendChild(statusBadge);
-        fileRow.appendChild(nameCell);
-        fileRow.appendChild(statusCell);
-        tbody.appendChild(fileRow);
-      });
       filesTable.appendChild(tbody);
+      const renderDirectoryFileRows = () => {
+        tbody.innerHTML = '';
+        const visibleFiles = applyPersistentTableView(`directoryFiles:${dirPath}`, files, TABLE_COLUMNS.directoryFiles);
+        if (visibleFiles.length === 0) {
+          const emptyRow = document.createElement('tr');
+          const emptyCell = document.createElement('td');
+          emptyCell.colSpan = 2;
+          emptyCell.style.textAlign = 'center';
+          emptyCell.style.color = '#757575';
+          emptyCell.textContent = 'No files match the current filters.';
+          emptyRow.appendChild(emptyCell);
+          tbody.appendChild(emptyRow);
+          return;
+        }
+        visibleFiles.forEach(file => {
+          const fileRow = document.createElement('tr');
+          const nameCell = document.createElement('td');
+          nameCell.textContent = file.name;
+          const statusCell = document.createElement('td');
+          const statusBadge = document.createElement('span');
+          statusBadge.className = `status-badge status-${file.status}`;
+          statusBadge.textContent = file.status;
+          statusCell.appendChild(statusBadge);
+          fileRow.appendChild(nameCell);
+          fileRow.appendChild(statusCell);
+          tbody.appendChild(fileRow);
+        });
+      };
+      setupPersistentTableControls(filesTable, `directoryFiles:${dirPath}`, TABLE_COLUMNS.directoryFiles, renderDirectoryFileRows);
+      renderDirectoryFileRows();
       
       filesCell.appendChild(filesTable);
     }
@@ -1737,11 +2387,11 @@ async function showDirectoryFiles(dirPath, directoryRow) {
     filesRow.appendChild(filesCell);
     directoryRow.parentNode.insertBefore(filesRow, directoryRow.nextSibling);
   } catch (error) {
-    console.error('Error loading directory files:', error);
+    console.error('Error loading folder files:', error);
     const errorRow = document.createElement('tr');
     errorRow.className = 'directory-files-row';
     errorRow.innerHTML = `
-      <td colspan="4" style="color: #d32f2f; padding: 10px;">
+      <td colspan="5" style="color: #d32f2f; padding: 10px;">
         Error loading files: ${error.message}
       </td>
     `;
@@ -1751,7 +2401,7 @@ async function showDirectoryFiles(dirPath, directoryRow) {
 
 function setStatusBarPassthrough(el, inbound) {
   el.textContent = '';
-  el.title = 'Inbound LLM passthrough (Settings → Server)';
+  el.title = 'Inbound LLM passthrough (Settings → LLM Passthrough)';
   el.classList.remove('status-bar-running', 'status-bar-stopped', 'status-bar-warning', 'status-bar-error');
 
   el.appendChild(document.createTextNode('LLM passthrough: '));
@@ -1879,6 +2529,7 @@ async function refreshAppStatusBar() {
 async function refreshVectorStore() {
   const stats = await window.electronAPI.getVectorStoreStats();
   const documents = await window.electronAPI.getDocuments();
+  latestDocuments = documents;
   
   // Update stats
   const statsBar = document.getElementById('vector-store-stats');
@@ -1897,10 +2548,24 @@ async function refreshVectorStore() {
     </div>
   `;
   
-  // Update documents table
+  renderDocumentsTable();
+  void refreshAppStatusBar();
+}
+
+function renderDocumentsTable() {
   const tbody = document.getElementById('documents-tbody');
+  if (!tbody) return;
+  const table = document.getElementById('documents-table');
+  setupPersistentTableControls(table, 'documents', TABLE_COLUMNS.documents, renderDocumentsTable);
+
   tbody.innerHTML = '';
-  
+
+  const documents = applyPersistentTableView('documents', latestDocuments, TABLE_COLUMNS.documents);
+  if (documents.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #757575;">No documents match the current filters.</td></tr>';
+    return;
+  }
+
   documents.forEach(doc => {
     const row = document.createElement('tr');
     row.dataset.documentId = doc.id;
@@ -1922,8 +2587,6 @@ async function refreshVectorStore() {
     `;
     tbody.appendChild(row);
   });
-
-  void refreshAppStatusBar();
 }
 
 async function showDocumentChunks(documentId) {
@@ -1958,7 +2621,7 @@ async function showDocumentChunks(documentId) {
     const fileName = doc ? doc.file_name : 'document';
     subtitle.textContent = `Chunks for "${fileName}". Click a row or View to see full content and metadata.`;
   }
-  tbody.innerHTML = '';
+  latestDocumentInfo = doc;
   
   // Update chunk count in documents table
   const docRows = document.querySelectorAll('#documents-tbody tr');
@@ -1976,9 +2639,29 @@ async function showDocumentChunks(documentId) {
     ? new Date(doc.updated_at).toLocaleString() 
     : 'N/A';
   
+  latestDocumentChunks = chunks.map(chunk => ({
+    ...chunk,
+    _lastUpdated: lastUpdated,
+    _lastUpdatedSort: doc && doc.updated_at ? new Date(doc.updated_at).getTime() : Number.NEGATIVE_INFINITY
+  }));
   console.log('Last updated value:', lastUpdated);
   console.log('Processing', chunks.length, 'chunks');
-  
+  renderChunksTable();
+}
+
+function renderChunksTable() {
+  const tbody = document.getElementById('chunks-tbody');
+  if (!tbody) return;
+  const table = tbody.closest('table');
+  setupPersistentTableControls(table, 'chunks', TABLE_COLUMNS.chunks, renderChunksTable);
+
+  tbody.innerHTML = '';
+  const chunks = applyPersistentTableView('chunks', latestDocumentChunks, TABLE_COLUMNS.chunks);
+  if (chunks.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px; color: #757575;">No chunks match the current filters.</td></tr>';
+    return;
+  }
+
   chunks.forEach((chunk, index) => {
     if (!chunk.id) {
       console.error('Chunk missing ID:', chunk);
@@ -2006,7 +2689,7 @@ async function showDocumentChunks(documentId) {
     }
     
     const lastUpdatedCell = document.createElement('td');
-    lastUpdatedCell.textContent = lastUpdated;
+    lastUpdatedCell.textContent = chunk._lastUpdated || 'N/A';
     
     const actionsCell = document.createElement('td');
     
@@ -2356,8 +3039,6 @@ async function performSearch() {
       timeDisplay.textContent = `Search completed in ${elapsedSeconds}s`;
     }
     
-    const resultsDiv = document.getElementById('search-results');
-    const tbody = document.getElementById('search-results-tbody');
     const warnBox = document.getElementById('search-warnings-errors');
     if (warnBox) {
       warnBox.innerHTML = '';
@@ -2376,48 +3057,8 @@ async function performSearch() {
       }
     }
 
-    if (tbody) {
-      tbody.innerHTML = '';
-      
-      if (results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No results found</td></tr>';
-      } else {
-        results.forEach((result, index) => {
-          const row = document.createElement('tr');
-          row.style.cursor = 'pointer';
-          row.addEventListener('click', () => showSearchChunkDetail(result.chunkId, result));
-          const preview = result.content.substring(0, 100) + (result.content.length > 100 ? '...' : '');
-          
-          // Format score based on algorithm
-          let scoreDisplay = '';
-          if (result.score !== undefined && result.score !== null) {
-            if (result.algorithm === 'Vector' || result.algorithm === 'Hybrid') {
-              // For vector/hybrid, show as percentage
-              scoreDisplay = `${(result.score * 100).toFixed(4)}%`;
-            } else {
-              // For BM25/TF-IDF, show raw score with 4 decimal places
-              scoreDisplay = result.score.toFixed(4);
-            }
-          } else {
-            scoreDisplay = 'N/A';
-          }
-          
-          const isWeb = result.metadata?.source === 'web';
-          const sourceBadge = isWeb
-            ? '<span class="source-badge source-web">Web</span>'
-            : '<span class="source-badge source-local">Local</span>';
-          
-          row.innerHTML = `
-            <td><span class="similarity-score">${scoreDisplay}</span></td>
-            <td><span class="algorithm-badge">${result.algorithm || 'Hybrid'}</span></td>
-            <td>${sourceBadge}</td>
-            <td>${result.metadata?.fileName || 'Unknown'}</td>
-            <td>${preview}</td>
-          `;
-          tbody.appendChild(row);
-        });
-      }
-    }
+    latestSearchResults = results;
+    renderSearchResultsTable();
     
     // Show results container
     if (container) {
@@ -2450,6 +3091,44 @@ async function performSearch() {
       cancelBtn.onclick = null;
     }
   }
+}
+
+function renderSearchResultsTable() {
+  const tbody = document.getElementById('search-results-tbody');
+  if (!tbody) return;
+  const table = tbody.closest('table');
+  setupPersistentTableControls(table, 'searchResults', TABLE_COLUMNS.searchResults, renderSearchResultsTable);
+
+  tbody.innerHTML = '';
+  const results = applyPersistentTableView('searchResults', latestSearchResults, TABLE_COLUMNS.searchResults);
+  if (results.length === 0) {
+    const message = latestSearchResults.length === 0
+      ? 'No results found'
+      : 'No results match the current filters.';
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center;">${message}</td></tr>`;
+    return;
+  }
+
+  results.forEach(result => {
+    const row = document.createElement('tr');
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', () => showSearchChunkDetail(result.chunkId, result));
+    const content = result.content || '';
+    const preview = content.substring(0, 100) + (content.length > 100 ? '...' : '');
+    const isWeb = result.metadata?.source === 'web';
+    const sourceBadge = isWeb
+      ? '<span class="source-badge source-web">Web</span>'
+      : '<span class="source-badge source-local">Local</span>';
+
+    row.innerHTML = `
+      <td><span class="similarity-score">${formatSearchScore(result)}</span></td>
+      <td><span class="algorithm-badge">${result.algorithm || 'Hybrid'}</span></td>
+      <td>${sourceBadge}</td>
+      <td>${result.metadata?.fileName || 'Unknown'}</td>
+      <td>${preview}</td>
+    `;
+    tbody.appendChild(row);
+  });
 }
 
 async function showSearchChunkDetail(chunkId, result) {
@@ -2742,7 +3421,7 @@ async function refreshServerStatus() {
       { method: 'GET', path: '/admin/documents/:documentId/chunks', description: 'Chunks for document (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'documentId', label: 'Document ID', type: 'text' }] },
       { method: 'GET', path: '/admin/chunks/:chunkId', description: 'Get chunk by ID (?namespace= if ambiguous)', requiresPayload: false, requiresParams: true, params: [{ name: 'chunkId', label: 'Chunk ID', type: 'text' }] },
       { method: 'POST', path: '/admin/ingest/file', description: 'Ingest file (?namespace= targets corpus; omit = active)', requiresPayload: true, requiresParams: false },
-      { method: 'POST', path: '/admin/ingest/directory', description: 'Ingest directory (?namespace= targets corpus)', requiresPayload: true, requiresParams: false }
+      { method: 'POST', path: '/admin/ingest/directory', description: 'Ingest folder (?namespace= targets corpus)', requiresPayload: true, requiresParams: false }
     ];
     
     endpointsTbody.innerHTML = '';
@@ -2784,7 +3463,7 @@ async function refreshServerStatus() {
     const p = status.inboundPassthrough;
     const lines = [];
     if (!p.masterEnabled) {
-      lines.push('Inbound LLM passthrough: off (enable LLM Passthrough under Settings → Server).');
+      lines.push('Inbound LLM passthrough: off (enable LLM Passthrough under Settings → LLM Passthrough).');
     } else {
       lines.push('Inbound LLM passthrough: on (LLM Passthrough + RAG; HTTP entry points below).');
       if (p.ollama.enabled) {
@@ -2901,14 +3580,14 @@ window.removeFile = async function(filePath) {
 };
 
 window.removeDirectory = async function(dirPath) {
-  if (confirm(`Remove directory ${dirPath}?`)) {
+  if (confirm(`Remove folder ${dirPath}?`)) {
     try {
       await window.electronAPI.removeDirectory(dirPath);
       await refreshDirectories();
       await refreshVectorStore();
     } catch (error) {
-      console.error('Error removing directory:', error);
-      alert(`Error removing directory: ${error.message}`);
+      console.error('Error removing folder:', error);
+      alert(`Error removing folder: ${error.message}`);
     }
   }
 };
@@ -2939,17 +3618,48 @@ window.updateDirectoryActive = async function(dirPath, active) {
   await refreshVectorStore();
 };
 
+function resolveDroppedFilePath(file) {
+  if (!file) return '';
+  if (typeof file.path === 'string' && file.path) return file.path;
+  if (typeof window.electronAPI?.getPathForFile === 'function') {
+    try {
+      return window.electronAPI.getPathForFile(file) || '';
+    } catch (e) {
+      console.warn('resolveDroppedFilePath: getPathForFile failed', e);
+    }
+  }
+  return '';
+}
+
 function setupDragAndDrop() {
   const filesCanvas = document.getElementById('files-canvas');
   const directoriesCanvas = document.getElementById('directories-canvas');
+  const dragDropListenerOptions = { capture: true };
+  const getDroppedPaths = (dataTransfer) => {
+    const paths = [];
+    const addPath = (path) => {
+      const p = String(path || '').trim();
+      if (p && !paths.includes(p)) paths.push(p);
+    };
+
+    Array.from(dataTransfer?.files || []).forEach(file => addPath(resolveDroppedFilePath(file)));
+    Array.from(dataTransfer?.items || []).forEach(item => {
+      const file = item.kind === 'file' && typeof item.getAsFile === 'function'
+        ? item.getAsFile()
+        : null;
+      addPath(resolveDroppedFilePath(file));
+    });
+    return paths;
+  };
   
   // Setup files canvas drag and drop
   if (filesCanvas) {
     filesCanvas.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       filesCanvas.style.backgroundColor = '#e3f2fd';
-    });
+    }, dragDropListenerOptions);
     
     filesCanvas.addEventListener('dragleave', (e) => {
       e.preventDefault();
@@ -2958,45 +3668,46 @@ function setupDragAndDrop() {
       if (!filesCanvas.contains(e.relatedTarget)) {
         filesCanvas.style.backgroundColor = '';
       }
-    });
+    }, dragDropListenerOptions);
     
     filesCanvas.addEventListener('drop', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       filesCanvas.style.backgroundColor = '';
       
-      const items = Array.from(e.dataTransfer.files);
-      for (const item of items) {
-        if (item.path) {
-          // Check if it's a directory
-          const isDir = await window.electronAPI.isDirectory(item.path);
+      const droppedPaths = getDroppedPaths(e.dataTransfer);
+      for (const itemPath of droppedPaths) {
+        if (itemPath) {
+          // Check if it's a folder
+          const isDir = await window.electronAPI.isDirectory(itemPath);
           if (!isDir) {
             // Only process files on the files canvas
             try {
-              await window.electronAPI.ingestFile(item.path, false);
+              await window.electronAPI.ingestFile(itemPath, false);
             } catch (error) {
               console.error('Error ingesting file:', error);
-              alert(`Error adding file ${item.path}: ${error.message}`);
+              alert(`Error adding file ${itemPath}: ${error.message}`);
             }
           } else {
-            // If it's a directory, show a message
-            alert(`Please drop directories on the Directories screen. ${item.path} is a directory.`);
+            // If it's a folder, show a message
+            alert(`Please drop folders on the Folders screen. ${itemPath} is a folder.`);
           }
         }
       }
       
       await refreshFiles();
       await refreshDirectories();
-    });
+    }, dragDropListenerOptions);
   }
   
-  // Setup directories canvas drag and drop
+  // Setup folders canvas drag and drop
   if (directoriesCanvas) {
     directoriesCanvas.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       directoriesCanvas.style.backgroundColor = '#e3f2fd';
-    });
+    }, dragDropListenerOptions);
     
     directoriesCanvas.addEventListener('dragleave', (e) => {
       e.preventDefault();
@@ -3005,49 +3716,49 @@ function setupDragAndDrop() {
       if (!directoriesCanvas.contains(e.relatedTarget)) {
         directoriesCanvas.style.backgroundColor = '';
       }
-    });
+    }, dragDropListenerOptions);
     
     directoriesCanvas.addEventListener('drop', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       directoriesCanvas.style.backgroundColor = '';
       
-      const items = Array.from(e.dataTransfer.files);
+      const droppedPaths = getDroppedPaths(e.dataTransfer);
       const directories = [];
       const files = [];
       
-      // Separate directories from files
-      for (const item of items) {
-        if (item.path) {
-          const isDir = await window.electronAPI.isDirectory(item.path);
+      // Separate folders from files
+      for (const itemPath of droppedPaths) {
+        if (itemPath) {
+          const isDir = await window.electronAPI.isDirectory(itemPath);
           if (isDir) {
-            directories.push(item.path);
+            directories.push(itemPath);
           } else {
-            files.push(item.path);
+            files.push(itemPath);
           }
         }
       }
       
-      // Process directories
+      // Process folders
       for (const dirPath of directories) {
         try {
           await window.electronAPI.ingestDirectory(dirPath, false, false);
         } catch (error) {
-          console.error('Error ingesting directory:', error);
-          alert(`Error adding directory ${dirPath}: ${error.message}`);
+          console.error('Error ingesting folder:', error);
+          alert(`Error adding folder ${dirPath}: ${error.message}`);
         }
       }
       
-      // Show message if files were dropped on directories canvas
+      // Show message if files were dropped on folders canvas
       if (files.length > 0 && directories.length === 0) {
-        alert(`Please drop directories here. Files should be dropped on the Files screen.`);
+        alert(`Please drop folders here. Files should be dropped on the Files screen.`);
       } else if (files.length > 0 && directories.length > 0) {
-        alert(`Added ${directories.length} directory(ies). ${files.length} file(s) were ignored. Please drop files on the Files screen.`);
+        alert(`Added ${directories.length} folder(s). ${files.length} file(s) were ignored. Please drop files on the Files screen.`);
       }
       
       await refreshFiles();
       await refreshDirectories();
-    });
+    }, dragDropListenerOptions);
   }
 }
 
@@ -3589,6 +4300,241 @@ function inboundPassthroughErrorMessage(statusCode, data) {
   return `HTTP ${statusCode}`;
 }
 
+/**
+ * @param {{ inboundPassthrough?: object } | null | undefined} status
+ * @param {unknown} inboundHostname
+ * @param {'auto' | 'openai' | 'ollama'} preferredKind
+ * @returns {{ kind: 'openai' | 'ollama', url: string } | null}
+ */
+function resolveLlmApiPassthroughTarget(status, inboundHostname, preferredKind) {
+  if (preferredKind === 'auto') return pickInboundLlmPassthroughEndpoint(status, inboundHostname);
+  const hostInUrl = formatHostnameForInboundTestUrl(inboundHostname);
+  const p = status && status.inboundPassthrough;
+  if (!p || p.masterEnabled !== true) return null;
+  if (
+    preferredKind === 'openai' &&
+    p.openai &&
+    p.openai.enabled === true &&
+    p.openai.listening === true &&
+    p.openai.port
+  ) {
+    return { kind: 'openai', url: `http://${hostInUrl}:${p.openai.port}/v1/chat/completions` };
+  }
+  if (
+    preferredKind === 'ollama' &&
+    p.ollama &&
+    p.ollama.enabled === true &&
+    p.ollama.listening === true &&
+    p.ollama.port
+  ) {
+    return { kind: 'ollama', url: `http://${hostInUrl}:${p.ollama.port}/api/chat` };
+  }
+  return null;
+}
+
+function selectedLlmApiKind() {
+  const sel = document.getElementById('llm-api-kind-select');
+  return sel && (sel.value === 'openai' || sel.value === 'ollama') ? sel.value : 'auto';
+}
+
+async function getSelectedLlmApiTarget() {
+  const settings = await window.electronAPI.getSettings();
+  const status = await window.electronAPI.getMCPServerStatus();
+  const inboundHost = String(settings.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
+  return {
+    settings,
+    status,
+    target: resolveLlmApiPassthroughTarget(status, inboundHost, selectedLlmApiKind())
+  };
+}
+
+async function refreshLlmApiPanel() {
+  const hint = document.getElementById('llm-api-config-hint');
+  const targetEl = document.getElementById('llm-api-target-url');
+  const sendBtn = document.getElementById('llm-api-send-btn');
+  const reqEl = document.getElementById('llm-api-request-body');
+  if (reqEl && !reqEl.value.trim()) {
+    reqEl.value = getDefaultLlmApiRequestText();
+  }
+  renderLlmApiHistorySelect();
+  if (!hint || !targetEl || !sendBtn) return;
+  if (llmApiSendAbortController) return;
+  try {
+    const { settings, target } = await getSelectedLlmApiTarget();
+    const on = settings.llmPassthroughEnabled === true;
+    if (!on) {
+      hint.textContent =
+        'LLM Passthrough is off. Enable it under Settings → LLM Passthrough and turn on an inbound listener before sending raw API requests.';
+      targetEl.textContent = 'No passthrough listener available.';
+      sendBtn.disabled = true;
+      return;
+    }
+    if (!target) {
+      const label = selectedLlmApiKind() === 'auto' ? 'an inbound listener' : `the ${selectedLlmApiKind()} listener`;
+      hint.textContent = `No ${label} is listening. Enable it under Settings → LLM Passthrough, then save settings.`;
+      targetEl.textContent = 'No passthrough listener available.';
+      sendBtn.disabled = true;
+      return;
+    }
+    hint.textContent = `Ready to POST raw JSON to the ${target.kind === 'openai' ? 'OpenAI-compatible' : 'Ollama-style'} passthrough listener.`;
+    targetEl.textContent = target.url;
+    sendBtn.disabled = false;
+  } catch {
+    hint.textContent = 'Could not load inbound passthrough status.';
+    targetEl.textContent = 'Status unavailable.';
+    sendBtn.disabled = true;
+  }
+}
+
+function loadLlmApiHistoryItem(id) {
+  const item = loadLlmApiHistory().find((x) => x.id === id);
+  if (!item) return;
+  const kindSel = document.getElementById('llm-api-kind-select');
+  const reqEl = document.getElementById('llm-api-request-body');
+  if (kindSel) kindSel.value = item.kind || 'auto';
+  if (reqEl) reqEl.value = item.requestText;
+  const responseLabel =
+    item.responseStatus == null
+      ? ''
+      : `${item.responseOk ? 'HTTP' : 'HTTP error'} ${item.responseStatus}`;
+  setLlmApiResponse(responseLabel, item.responseText || '');
+  const targetEl = document.getElementById('llm-api-target-url');
+  if (targetEl && item.targetUrl) targetEl.textContent = item.targetUrl;
+  void refreshLlmApiPanel();
+}
+
+function setupLlmApiControlsOnce() {
+  if (llmApiControlsListenerBound) return;
+  llmApiControlsListenerBound = true;
+  const kindSel = document.getElementById('llm-api-kind-select');
+  if (kindSel) {
+    kindSel.addEventListener('change', () => {
+      void refreshLlmApiPanel();
+    });
+  }
+  const historySel = document.getElementById('llm-api-history-select');
+  if (historySel) {
+    historySel.addEventListener('change', () => {
+      if (historySel.value) loadLlmApiHistoryItem(historySel.value);
+    });
+  }
+  const clearBtn = document.getElementById('llm-api-history-clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      saveLlmApiHistory([]);
+      renderLlmApiHistorySelect();
+      setLlmApiResponse('', '');
+    });
+  }
+  const sendBtn = document.getElementById('llm-api-send-btn');
+  if (sendBtn) {
+    sendBtn.addEventListener('click', () => {
+      void sendLlmApiRawRequest();
+    });
+  }
+}
+
+async function sendLlmApiRawRequest() {
+  const sendBtn = document.getElementById('llm-api-send-btn');
+  const reqEl = document.getElementById('llm-api-request-body');
+  if (!sendBtn || !reqEl) return;
+  if (llmApiSendAbortController) {
+    llmApiSendAbortController.abort();
+    return;
+  }
+  const requestText = String(reqEl.value || '').trim();
+  if (!requestText) {
+    alert('Enter a JSON request body.');
+    return;
+  }
+  try {
+    JSON.parse(requestText);
+  } catch (e) {
+    setLlmApiResponse('Invalid JSON', e && e.message ? e.message : String(e));
+    return;
+  }
+  let target;
+  let settings;
+  try {
+    await persistLlmTestRetrievalSettingsFromInputs();
+    const resolved = await getSelectedLlmApiTarget();
+    target = resolved.target;
+    settings = resolved.settings;
+  } catch (e) {
+    setLlmApiResponse('Status error', e && e.message ? e.message : String(e));
+    return;
+  }
+  if (!target) {
+    setLlmApiResponse('No listener', 'No matching inbound passthrough listener is available.');
+    await refreshLlmApiPanel();
+    return;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const activeNs = window.electronAPI.getActiveNamespace ? await window.electronAPI.getActiveNamespace() : '';
+  if (activeNs && String(activeNs).trim()) {
+    headers['X-Froggy-Namespace'] = String(activeNs).trim();
+  }
+  const timeoutMs =
+    Number.isFinite(settings.llmPassthroughTimeoutMs) && settings.llmPassthroughTimeoutMs > 0
+      ? settings.llmPassthroughTimeoutMs
+      : 120000;
+  const controller = new AbortController();
+  llmApiSendAbortController = controller;
+  let timer = null;
+  sendBtn.textContent = 'Cancel';
+  sendBtn.disabled = false;
+  setLlmRequestProcessingCursor(true);
+  setLlmApiResponse('Sending...', '');
+  try {
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(target.url, {
+      method: 'POST',
+      headers,
+      body: requestText,
+      signal: controller.signal
+    });
+    const rawText = await response.text();
+    let responseText = rawText;
+    try {
+      responseText = rawText ? JSON.stringify(JSON.parse(rawText), null, 2) : '';
+    } catch {
+      responseText = rawText;
+    }
+    const label = `${response.ok ? 'HTTP' : 'HTTP error'} ${response.status}`;
+    setLlmApiResponse(label, responseText);
+    recordLlmApiHistoryItem({
+      kind: selectedLlmApiKind(),
+      targetUrl: target.url,
+      requestText,
+      responseStatus: response.status,
+      responseOk: response.ok,
+      responseText
+    });
+  } catch (e) {
+    const cancelled = e && e.name === 'AbortError';
+    const label = cancelled ? 'Cancelled' : 'Request failed';
+    const message = cancelled ? 'The raw API request was cancelled or timed out.' : e && e.message ? e.message : String(e);
+    setLlmApiResponse(label, message);
+    if (!cancelled) {
+      recordLlmApiHistoryItem({
+        kind: selectedLlmApiKind(),
+        targetUrl: target.url,
+        requestText,
+        responseStatus: null,
+        responseOk: false,
+        responseText: message
+      });
+    }
+  } finally {
+    if (timer != null) clearTimeout(timer);
+    llmApiSendAbortController = null;
+    setLlmRequestProcessingCursor(false);
+    sendBtn.textContent = 'Send raw request';
+    await refreshLlmApiPanel();
+  }
+}
+
 function resetLlmPassthroughSendButtonLabel(sendBtn) {
   if (sendBtn) sendBtn.textContent = LLM_PASSTHROUGH_SEND_DEFAULT_LABEL;
 }
@@ -3609,6 +4555,7 @@ function beginLlmPassthroughSendCancellable(sendBtn, cancelFn) {
   llmPassthroughSendInFlight = true;
   llmPassthroughSendUserCancelled = false;
   llmPassthroughSendCancelFn = cancelFn;
+  setLlmRequestProcessingCursor(true);
   setLlmPassthroughSendButtonToCancel(sendBtn);
 }
 
@@ -3616,10 +4563,11 @@ function endLlmPassthroughSendUi(sendBtn) {
   if (!llmPassthroughSendInFlight) return;
   llmPassthroughSendInFlight = false;
   llmPassthroughSendCancelFn = null;
+  setLlmRequestProcessingCursor(false);
   resetLlmPassthroughSendButtonLabel(sendBtn);
 }
 
-/** @param {Record<string, unknown>} [overrides] Merged on top of getSettings() for live Server-tab edits. */
+/** @param {Record<string, unknown>} [overrides] Merged on top of getSettings() for live LLM Passthrough tab edits. */
 async function refreshLlmPassthroughPanel(overrides) {
   const hint = document.getElementById('llm-passthrough-config-hint');
   const sendBtn = document.getElementById('llm-passthrough-send-btn');
@@ -3644,13 +4592,13 @@ async function refreshLlmPassthroughPanel(overrides) {
     const prov = useOpenAi ? 'OpenAI-compatible' : 'Ollama';
     if (!on) {
       hint.textContent =
-        'LLM Passthrough is off. Enable it under Settings → Server (LLM upstream), and set base URL and model there.';
+        'LLM Passthrough is off. Enable it under Settings → LLM Passthrough, and set base URL and model there.';
       sendBtn.disabled = true;
       return;
     }
     if (!base || !model) {
       hint.textContent =
-        'LLM Passthrough is enabled but base URL or model is missing for the selected API style. Complete those fields under Settings → Server.';
+        'LLM Passthrough is enabled but base URL or model is missing for the selected API style. Complete those fields under Settings → LLM Passthrough.';
       sendBtn.disabled = true;
       return;
     }
@@ -3673,7 +4621,7 @@ async function refreshLlmPassthroughPanel(overrides) {
     const inboundHost = String(s.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
     const inbound = pickInboundLlmPassthroughEndpoint(mcpStatus, inboundHost);
     if (!inbound) {
-      hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". Inbound HTTP test: enable at least one listener under Settings → Server until status shows listening — or switch Test transport to Direct IPC to skip HTTP.`;
+      hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". Inbound HTTP test: enable at least one listener under Settings → LLM Passthrough until status shows listening — or switch Test transport to Direct IPC to skip HTTP.`;
       sendBtn.disabled = true;
       return;
     }
@@ -3976,7 +4924,7 @@ function applyAllSettingsModalFieldsToSettings(settings) {
   const ptOpenAiEn = document.getElementById('settings-passthrough-openai-listen-enabled-input');
   const ptOpenAiPort = document.getElementById('settings-passthrough-openai-listen-port-input');
   if (!ptOllamaEn || !ptOllamaPort || !ptOpenAiEn || !ptOpenAiPort) {
-    return { ok: false, message: 'Settings form is missing inbound passthrough fields (Server tab).' };
+    return { ok: false, message: 'Settings form is missing inbound passthrough fields (LLM Passthrough tab).' };
   }
   const passthroughOllamaListenEnabled = ptOllamaEn.checked === true;
   const passthroughOpenAiListenEnabled = ptOpenAiEn.checked === true;
@@ -4056,6 +5004,7 @@ async function persistSettingsModal() {
 
     await refreshServerStatus();
     void refreshLlmPassthroughPanel();
+    void refreshLlmApiPanel();
     return true;
   } catch (e) {
     console.error('persistSettingsModal', e);
@@ -4272,7 +5221,7 @@ async function regenerateVectorStore() {
   if (!btn) return;
   
   // Confirm action
-  const confirmed = confirm('This will clear the entire vector store and re-index all files from your current files/directories settings. This action cannot be undone. Continue?');
+  const confirmed = confirm('This will clear the entire vector store and re-index all files from your current files/folders settings. This action cannot be undone. Continue?');
   if (!confirmed) {
     return;
   }

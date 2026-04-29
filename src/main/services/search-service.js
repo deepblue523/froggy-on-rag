@@ -171,8 +171,15 @@ class SearchService {
    * Uses cache if available and valid
    */
   buildDocumentFrequencyIndexFromDB(vectorStore, whereClause = '', params = []) {
+    let chunkFilter = null;
+    if (whereClause && typeof whereClause === 'object') {
+      const opts = whereClause;
+      whereClause = opts.whereClause || '';
+      params = Array.isArray(opts.params) ? opts.params : [];
+      chunkFilter = typeof opts.chunkFilter === 'function' ? opts.chunkFilter : null;
+    }
     // Check if we can use cached index (only if no filtering)
-    if (!whereClause && vectorStore.isDocumentFrequencyIndexCacheValid()) {
+    if (!whereClause && !chunkFilter && vectorStore.isDocumentFrequencyIndexCacheValid()) {
       const docFreqs = vectorStore.getCachedDocumentFrequencyIndex();
       const stats = vectorStore.getCachedChunkStatistics();
       return {
@@ -193,7 +200,8 @@ class SearchService {
       includeContent: true,
       includeMetadata: true
     }, (chunks) => {
-      chunks.forEach(chunk => {
+      const filteredChunks = chunkFilter ? chunks.filter(chunkFilter) : chunks;
+      filteredChunks.forEach(chunk => {
         const terms = this.tokenize(getChunkSearchText(chunk));
         chunkLengths.push(terms.length);
         totalDocs++;
@@ -210,7 +218,7 @@ class SearchService {
       : 0;
     
     // Cache the index if no filtering (so it can be reused)
-    if (!whereClause) {
+    if (!whereClause && !chunkFilter) {
       vectorStore.cacheDocumentFrequencyIndex(docFreqs, avgDocLength, totalDocs);
     }
     
@@ -269,12 +277,17 @@ class SearchService {
    * This avoids loading all chunks into memory
    * Optimized to use cached document frequency index when available
    */
-  searchBM25FromDB(vectorStore, query, limit = 10, whereClause = '', params = []) {
+  searchBM25FromDB(vectorStore, query, limit = 10, whereClause = '', params = [], options = {}) {
     const queryTerms = this.tokenize(query);
     if (queryTerms.length === 0) return [];
+    const chunkFilter = typeof options.chunkFilter === 'function' ? options.chunkFilter : null;
     
     // Build document frequency index by streaming (uses cache if available)
-    const { docFreqs, avgDocLength, totalDocs } = this.buildDocumentFrequencyIndexFromDB(vectorStore, whereClause, params);
+    const { docFreqs, avgDocLength, totalDocs } = this.buildDocumentFrequencyIndexFromDB(vectorStore, {
+      whereClause,
+      params,
+      chunkFilter
+    });
     
     if (totalDocs === 0) return [];
     
@@ -304,6 +317,10 @@ class SearchService {
     }, (chunks) => {
       const batchResults = chunks
         .filter(chunk => {
+          if (chunkFilter && !chunkFilter(chunk)) {
+            skippedCount++;
+            return false;
+          }
           // Quick pre-filter: skip chunks that don't contain any query terms
           if (!hasQueryTerm(chunk)) {
             skippedCount++;
@@ -445,12 +462,16 @@ class SearchService {
     if (!queryEmbedding) return [];
     
     const {
-      chunkIdWhitelist = null
+      chunkIdWhitelist = null,
+      chunkFilter = null
     } = options;
     
     const topResults = [];
     
     const processChunk = (chunk) => {
+      if (typeof chunkFilter === 'function' && !chunkFilter(chunk)) {
+        return;
+      }
       if (!chunk.embedding || chunk.embedding.length === 0) {
         return;
       }
@@ -478,7 +499,7 @@ class SearchService {
       const candidateChunks = vectorStore.getChunksByIds(chunkIdWhitelist, {
         includeEmbeddings: true,
         includeContent: false,
-        includeMetadata: false,
+        includeMetadata: typeof chunkFilter === 'function',
         embeddingAsFloat32: true
       });
       candidateChunks.forEach(processChunk);
@@ -487,7 +508,7 @@ class SearchService {
         batchSize: 500,
         includeEmbeddings: true,
         includeContent: false,
-        includeMetadata: false,
+        includeMetadata: typeof chunkFilter === 'function',
         embeddingAsFloat32: true
       }, (chunks) => {
         chunks.forEach(processChunk);
@@ -576,9 +597,12 @@ class SearchService {
    * Hybrid search combining BM25 and Vector search - streaming from database
    * This avoids loading all chunks into memory
    */
-  searchHybridFromDB(vectorStore, query, queryEmbedding, limit = 10, bm25Weight = 0.5, vectorWeight = 0.5, whereClause = '', params = []) {
+  searchHybridFromDB(vectorStore, query, queryEmbedding, limit = 10, bm25Weight = 0.5, vectorWeight = 0.5, whereClause = '', params = [], options = {}) {
+    const chunkFilter = typeof options.chunkFilter === 'function' ? options.chunkFilter : null;
     // Get BM25 results (streaming)
-    const bm25Results = this.searchBM25FromDB(vectorStore, query, limit * 2, whereClause, params);
+    const bm25Results = this.searchBM25FromDB(vectorStore, query, limit * 2, whereClause, params, {
+      chunkFilter
+    });
     const bm25Map = new Map();
     bm25Results.forEach(r => {
       bm25Map.set(r.id, r.score);
@@ -593,7 +617,7 @@ class SearchService {
       limit * 2,
       vectorWhereClause,
       params,
-      { chunkIdWhitelist: candidateIds ? Array.from(candidateIds) : null }
+      { chunkIdWhitelist: candidateIds ? Array.from(candidateIds) : null, chunkFilter }
     );
     const vectorMap = new Map();
     vectorResults.forEach(r => {
@@ -848,6 +872,145 @@ class SearchService {
     return filtered;
   }
 
+  normalizeFilterTags(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map(tag => String(tag || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  splitFilterMetadataTag(value) {
+    const text = String(value || '').trim().toLowerCase();
+    if (!text) return null;
+    const eq = text.indexOf('=');
+    const colon = text.indexOf(':');
+    const idx =
+      eq >= 0 && colon >= 0
+        ? Math.min(eq, colon)
+        : eq >= 0
+          ? eq
+          : colon;
+    if (idx <= 0) return null;
+    const key = text.slice(0, idx).trim();
+    const val = text.slice(idx + 1).trim();
+    return key && val ? { key, value: val } : null;
+  }
+
+  addMetadataValue(target, key, value) {
+    const metaKey = String(key || '').trim().toLowerCase();
+    if (!metaKey || value === undefined || value === null || value === '') return;
+    const values = Array.isArray(value) ? value : [value];
+    if (!target.has(metaKey)) target.set(metaKey, new Set());
+    const bucket = target.get(metaKey);
+    for (const raw of values) {
+      if (raw && typeof raw === 'object') {
+        bucket.add(JSON.stringify(raw).toLowerCase());
+      } else {
+        const text = String(raw || '').trim().toLowerCase();
+        if (text) bucket.add(text);
+      }
+    }
+  }
+
+  collectMixedTagFilterValues(value, simpleTags, metadata) {
+    if (Array.isArray(value)) {
+      value.forEach(item => this.collectMixedTagFilterValues(item, simpleTags, metadata));
+      return;
+    }
+    if (typeof value === 'string') {
+      const parts = value.split(',').map(part => part.trim()).filter(Boolean);
+      const entries = parts.length > 1 ? parts : [value.trim()];
+      for (const entry of entries) {
+        const parsed = this.splitFilterMetadataTag(entry);
+        if (parsed) this.addMetadataValue(metadata, parsed.key, parsed.value);
+        else simpleTags.add(entry.toLowerCase());
+      }
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [key, raw] of Object.entries(value)) {
+        if (key === 'tags' || key === 'tag') {
+          this.collectMixedTagFilterValues(raw, simpleTags, metadata);
+        } else {
+          this.addMetadataValue(metadata, key, raw);
+        }
+      }
+    }
+  }
+
+  getChunkTagFilterValues(chunk) {
+    const simpleTags = new Set();
+    const metadata = new Map();
+    const meta = chunk && chunk.metadata && typeof chunk.metadata === 'object'
+      ? chunk.metadata
+      : {};
+    this.collectMixedTagFilterValues(meta.tags, simpleTags, metadata);
+    for (const [key, value] of Object.entries(meta)) {
+      if (key === 'tags') continue;
+      this.addMetadataValue(metadata, key, value);
+    }
+    return { simpleTags, metadata };
+  }
+
+  chunkHasAllTags(chunk, requiredTags) {
+    const tags = this.normalizeFilterTags(requiredTags);
+    if (!tags.length) return true;
+
+    const available = this.getChunkTagFilterValues(chunk);
+    return tags.every(tag => {
+      const metadataTag = this.splitFilterMetadataTag(tag);
+      if (metadataTag) {
+        return available.metadata.has(metadataTag.key) &&
+          available.metadata.get(metadataTag.key).has(metadataTag.value);
+      }
+      if (available.simpleTags.has(tag)) return true;
+      if (available.metadata.has(tag)) return true;
+      for (const values of available.metadata.values()) {
+        if (values.has(tag)) return true;
+      }
+      return false;
+    });
+  }
+
+  normalizeFilterMetadata(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const out = {};
+    for (const [key, raw] of Object.entries(value)) {
+      const cleanKey = String(key || '').trim().toLowerCase();
+      if (!cleanKey || raw === undefined || raw === null || raw === '') continue;
+      const values = Array.isArray(raw) ? raw : [raw];
+      const cleanValues = values
+        .map(v => String(v || '').trim().toLowerCase())
+        .filter(Boolean);
+      if (cleanValues.length) out[cleanKey] = cleanValues;
+    }
+    return out;
+  }
+
+  chunkHasAllMetadata(chunk, requiredMetadata) {
+    const filters = this.normalizeFilterMetadata(requiredMetadata);
+    const keys = Object.keys(filters);
+    if (!keys.length) return true;
+
+    const available = this.getChunkTagFilterValues(chunk).metadata;
+    return keys.every(key => {
+      if (!available.has(key)) return false;
+      const values = available.get(key);
+      return filters[key].every(requiredValue => values.has(requiredValue));
+    });
+  }
+
+  buildChunkFilter(retrievalSettings = {}) {
+    const filterTags = this.normalizeFilterTags(retrievalSettings.filters && retrievalSettings.filters.tags);
+    const filterMetadata = this.normalizeFilterMetadata(
+      retrievalSettings.filters && retrievalSettings.filters.metadata
+    );
+    if (!filterTags.length && Object.keys(filterMetadata).length === 0) return null;
+    return chunk =>
+      this.chunkHasAllTags(chunk, filterTags) &&
+      this.chunkHasAllMetadata(chunk, filterMetadata);
+  }
+
   /**
    * Attach chunk details (content/metadata) to results when streaming
    */
@@ -920,6 +1083,7 @@ class SearchService {
    * Automatically uses streaming for large datasets (>5000 chunks)
    */
   async search(query, queryEmbedding, chunks, limit = 10, algorithm = 'hybrid', retrievalSettings = {}, metadataSettings = {}, documentMap = null, vectorStore = null) {
+    const chunkFilter = this.buildChunkFilter(retrievalSettings);
     // Use streaming approach for large datasets or if vectorStore is provided
     const useStreaming = vectorStore && (chunks === null || chunks.length > 5000);
     
@@ -948,7 +1112,9 @@ class SearchService {
       let results;
       switch (algorithm.toLowerCase()) {
         case 'bm25':
-          results = this.searchBM25FromDB(vectorStore, query, limit, whereClause, params);
+          results = this.searchBM25FromDB(vectorStore, query, limit, whereClause, params, {
+            chunkFilter
+          });
           break;
         case 'tfidf':
         case 'tf-idf':
@@ -961,16 +1127,22 @@ class SearchService {
             results = this.searchTFIDF(query, filteredChunks, limit);
           } else {
             // For very large datasets, use BM25 as fallback
-            results = this.searchBM25FromDB(vectorStore, query, limit, whereClause, params);
+            results = this.searchBM25FromDB(vectorStore, query, limit, whereClause, params, {
+              chunkFilter
+            });
           }
           break;
         case 'vector':
           const vectorWhereClause = whereClause ? `${whereClause} AND embedding IS NOT NULL` : 'embedding IS NOT NULL';
-          results = this.searchVectorFromDB(vectorStore, queryEmbedding, limit, vectorWhereClause, params);
+          results = this.searchVectorFromDB(vectorStore, queryEmbedding, limit, vectorWhereClause, params, {
+            chunkFilter
+          });
           break;
         case 'hybrid':
         default:
-          results = this.searchHybridFromDB(vectorStore, query, queryEmbedding, limit, 0.5, 0.5, whereClause, params);
+          results = this.searchHybridFromDB(vectorStore, query, queryEmbedding, limit, 0.5, 0.5, whereClause, params, {
+            chunkFilter
+          });
           break;
       }
       
@@ -999,6 +1171,9 @@ class SearchService {
     // Apply time range filtering before search (if documentMap is provided)
     if (metadataSettings.sinceDays && documentMap) {
       filteredChunks = this.applyTimeRangeFilter(chunks, metadataSettings.sinceDays, documentMap);
+    }
+    if (chunkFilter) {
+      filteredChunks = filteredChunks.filter(chunkFilter);
     }
     
     // Perform search on filtered chunks

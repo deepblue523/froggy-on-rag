@@ -2,7 +2,7 @@
  * User data layout under ~/froggy-rag-mcp:
  *   settings.json (app-level; includes windowState, activeNamespace)
  *   data/<namespace>/vector_store.db
- *   data/<namespace>/namespace.json (files, directories, mruSearches for that store)
+ *   data/<namespace>/namespace.json (files, directories setting, mruSearches, promptProfiles for that store)
  */
 
 const fs = require('fs');
@@ -49,7 +49,7 @@ function listNamespaceDirNames() {
 }
 
 /**
- * Pick initial namespace from app settings and existing directories.
+ * Pick initial namespace from app settings and existing folders.
  */
 function resolveInitialNamespaceName() {
   const names = listNamespaceDirNames();
@@ -100,7 +100,7 @@ function migrateIfAbsent(from, to) {
 }
 
 /**
- * Ensures directories exist and moves files from older layouts when safe.
+ * Ensures folders exist and moves files from older layouts when safe.
  */
 function ensureUserDataLayout() {
   const root = getAppRoot();

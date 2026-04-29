@@ -18,17 +18,17 @@ with all code embedded.
 - Header bar at top wirh label "Froggy RAG MCP".
 - Tree on the left with sizable vertical splitter (position is persisted).
     - tree will initially contain four roots: Ingestion, Vector Store, Search, and Server.
-	    - Ingestion: will have two child elements: Files and Directories
+	    - Ingestion: will have two child elements: Files and Folders
             - Files - Selecting Files opens a canvas for managing files to be ingested/changed/deleted/watched.
   			    - Files can be dragged onto a grid, or added via button.  Button exists to remove as well in each row.
 			    - Each file can be monitored for changes for automatic re-ingestion.  Checkbox in each row to specify.
 			    - Files added/changed will be added to the RAG queue for processing.  
 			    - The files grid shows the current ingestion status of each file.
-            - Directories - Selecting Directories opens a canvas for managing directories to be ingested/managed/watched.
-                - Directories can be added and removed using buttons or by dragging one onto the grid.
-                - Directories have a checkbox on each row to specify whether it should be watched.
-                - If watched, vector store is updated along with directory updates (files within that path)
-                - Directories can be watched recursively, specified via checkbox in each row.
+            - Folders - Selecting Folders opens a canvas for managing folders to be ingested/managed/watched.
+                - Folders can be added and removed using buttons or by dragging one onto the grid.
+                - Folders have a checkbox on each row to specify whether it should be watched.
+                - If watched, vector store is updated along with folder updates (files within that path)
+                - Folders can be watched recursively, specified via checkbox in each row.
             - These settings will be persisted.
 		- Vector Store: will show the status/metrics for the vector store.
 		    - Show list of documents in vector store

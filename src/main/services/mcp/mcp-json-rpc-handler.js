@@ -14,7 +14,7 @@ const {
 const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'froggy-rag-mcp';
 const INSTRUCTIONS =
-  'Use search_vector_store for vector search (optional namespace). For RAG plus your configured upstream LLM, use the Froggy app: enable LLM Passthrough and inbound HTTP listeners under Settings → Server, then call those local Ollama- or OpenAI-compatible ports from your client. Use list_namespaces to discover corpora; omit namespace to use the server default or search all when no default is inferred.';
+  'Use search_vector_store for vector search (optional namespace). For RAG plus your configured upstream LLM, use the Froggy app: enable LLM Passthrough and inbound HTTP listeners under Settings → LLM Passthrough, then call those local Ollama- or OpenAI-compatible ports from your client. Use list_namespaces to discover corpora; omit namespace to use the server default or search all when no default is inferred.';
 
 function readPackageVersion() {
   try {

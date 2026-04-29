@@ -178,7 +178,7 @@ SEARCH_PROFILE=1 npm start
 ## Testing
 
 ### Verify Non-Blocking Behavior
-1. Index a large directory (1000+ files)
+1. Index a large folder (1000+ files)
 2. While indexing, try to:
    - Navigate between tabs
    - Perform searches

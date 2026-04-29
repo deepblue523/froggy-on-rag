@@ -1,6 +1,8 @@
 const { ipcMain, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const appPaths = require('../paths');
+const { readJsonObject } = require('../settings-files');
 
 // Helper to wait for services to be ready
 let ragServiceRef = null;
@@ -15,6 +17,71 @@ let getDataDirFn = null;
 let inboundPassthroughRef = null;
 /** AbortController for in-flight LLM tab direct-IPC test (upstream fetch). */
 let llmPassthroughTestDirectAbortController = null;
+
+function normalizePromptProfileName(value) {
+  return String(value || '').trim();
+}
+
+function promptProfileToBody(profile) {
+  if (typeof profile === 'string') return profile;
+  if (profile && typeof profile === 'object' && !Array.isArray(profile)) {
+    if (typeof profile.body === 'string') return profile.body;
+    const parts = [];
+    for (const key of ['system', 'prompt', 'template', 'instructions']) {
+      const value = profile[key];
+      if (typeof value === 'string' && value.trim()) {
+        parts.push(value.trim());
+      } else if (Array.isArray(value)) {
+        const lines = value.map((line) => String(line || '').trim()).filter(Boolean);
+        if (lines.length) parts.push(lines.join('\n'));
+      }
+    }
+    return parts.join('\n\n');
+  }
+  return '';
+}
+
+function normalizePromptProfiles(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out = {};
+  for (const [rawName, rawProfile] of Object.entries(value)) {
+    const name = normalizePromptProfileName(
+      rawProfile && typeof rawProfile === 'object' && !Array.isArray(rawProfile) && rawProfile.name
+        ? rawProfile.name
+        : rawName
+    );
+    if (!name) continue;
+    out[name] = {
+      name,
+      body: promptProfileToBody(rawProfile)
+    };
+  }
+  return out;
+}
+
+function getNamespaceJsonPath(namespaceName) {
+  if (!appPaths.isValidNamespaceName(namespaceName)) {
+    throw new Error('Invalid namespace name');
+  }
+  const dataDir = appPaths.getDataDirForNamespace(namespaceName);
+  if (!fs.existsSync(dataDir)) {
+    throw new Error('Namespace does not exist');
+  }
+  return path.join(dataDir, 'namespace.json');
+}
+
+function updateActiveNamespacePromptProfiles(namespaceName, profiles) {
+  if (!ragServiceRef || !ragServiceRef.settings || typeof getDataDirFn !== 'function') return;
+  try {
+    const activeDir = path.resolve(getDataDirFn());
+    const targetDir = path.resolve(appPaths.getDataDirForNamespace(namespaceName));
+    if (activeDir === targetDir) {
+      ragServiceRef.settings.promptProfiles = profiles;
+    }
+  } catch {
+    /* ignore active namespace cache refresh failures */
+  }
+}
 
 function waitForServices() {
   if (servicesReady && ragServiceRef && mcpServiceRef) {
@@ -219,6 +286,71 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     return ragServiceRef.saveWebSearchSettings(patch || {});
   });
 
+  ipcMain.handle('namespace-prompt-profiles-get', async (_, namespaceName) => {
+    try {
+      const ns = String(namespaceName || '').trim();
+      const namespacePath = getNamespaceJsonPath(ns);
+      const namespaceSettings = readJsonObject(namespacePath);
+      return {
+        ok: true,
+        namespace: ns,
+        promptProfiles: normalizePromptProfiles(namespaceSettings.promptProfiles)
+      };
+    } catch (error) {
+      return { ok: false, error: error.message || String(error), promptProfiles: {} };
+    }
+  });
+
+  ipcMain.handle('namespace-prompt-profile-save', async (_, namespaceName, profile, originalName) => {
+    try {
+      const ns = String(namespaceName || '').trim();
+      const namespacePath = getNamespaceJsonPath(ns);
+      const name = normalizePromptProfileName(profile && profile.name);
+      if (!name) {
+        return { ok: false, error: 'Prompt profile name is required.' };
+      }
+      if (name.length > 100) {
+        return { ok: false, error: 'Prompt profile name must be 100 characters or fewer.' };
+      }
+      const body = String((profile && profile.body) || '');
+      const namespaceSettings = readJsonObject(namespacePath);
+      const promptProfiles = normalizePromptProfiles(namespaceSettings.promptProfiles);
+      const oldName = normalizePromptProfileName(originalName);
+      if (oldName && oldName !== name) {
+        delete promptProfiles[oldName];
+      }
+      promptProfiles[name] = { name, body };
+      namespaceSettings.promptProfiles = promptProfiles;
+      fs.mkdirSync(path.dirname(namespacePath), { recursive: true });
+      fs.writeFileSync(namespacePath, JSON.stringify(namespaceSettings, null, 2), 'utf-8');
+      updateActiveNamespacePromptProfiles(ns, promptProfiles);
+      return { ok: true, namespace: ns, promptProfiles };
+    } catch (error) {
+      return { ok: false, error: error.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('namespace-prompt-profile-delete', async (_, namespaceName, profileName) => {
+    try {
+      const ns = String(namespaceName || '').trim();
+      const namespacePath = getNamespaceJsonPath(ns);
+      const name = normalizePromptProfileName(profileName);
+      if (!name) {
+        return { ok: false, error: 'Prompt profile name is required.' };
+      }
+      const namespaceSettings = readJsonObject(namespacePath);
+      const promptProfiles = normalizePromptProfiles(namespaceSettings.promptProfiles);
+      delete promptProfiles[name];
+      namespaceSettings.promptProfiles = promptProfiles;
+      fs.mkdirSync(path.dirname(namespacePath), { recursive: true });
+      fs.writeFileSync(namespacePath, JSON.stringify(namespaceSettings, null, 2), 'utf-8');
+      updateActiveNamespacePromptProfiles(ns, promptProfiles);
+      return { ok: true, namespace: ns, promptProfiles };
+    } catch (error) {
+      return { ok: false, error: error.message || String(error) };
+    }
+  });
+
   ipcMain.on('llm-passthrough-test-direct-cancel', () => {
     if (llmPassthroughTestDirectAbortController) {
       try {
@@ -366,7 +498,7 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
       const stats = fs.statSync(filePath);
       return stats.isDirectory();
     } catch (error) {
-      console.error('Error checking if path is directory:', error);
+      console.error('Error checking if path is folder:', error);
       return false;
     }
   });

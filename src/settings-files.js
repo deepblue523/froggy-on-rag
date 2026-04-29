@@ -1,13 +1,14 @@
 /**
  * App-level settings: ~/froggy-rag-mcp/settings.json (everything except per-store keys).
- * Namespace (per vector store): data/<ns>/namespace.json — only files, directories, mruSearches.
+ * Namespace (per vector store): data/<ns>/namespace.json — files, directories setting, mruSearches,
+ * promptProfiles.
  */
 
 const fs = require('fs');
 const path = require('path');
 
 /** Keys stored per vector store; all other settings live in settings.json */
-const NAMESPACE_ONLY_KEYS = new Set(['files', 'directories', 'mruSearches']);
+const NAMESPACE_ONLY_KEYS = new Set(['files', 'directories', 'mruSearches', 'promptProfiles']);
 
 function splitSettingsForPersist(merged) {
   const app = {};
@@ -119,6 +120,7 @@ function getDefaultSettings() {
     files: [],
     directories: [],
     mruSearches: [],
+    promptProfiles: {},
     splitterPosition: 250,
     chunkSize: 1000,
     chunkOverlap: 200,

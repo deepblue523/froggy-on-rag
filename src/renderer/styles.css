@@ -11,6 +11,11 @@ body {
   background: #f5f5f5;
 }
 
+body.llm-request-processing,
+body.llm-request-processing * {
+  cursor: wait !important;
+}
+
 /* Startup loading screen - visible until app is ready */
 .app-loading {
   position: fixed;
@@ -195,6 +200,117 @@ body {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.namespace-prompt-profiles-panel {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #d9e7f5;
+  border-radius: 4px;
+  background: #f8fbff;
+}
+
+.namespace-prompt-profiles-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.namespace-prompt-profiles-header h4 {
+  margin: 0 0 4px;
+  color: #2c3e50;
+  font-size: 15px;
+}
+
+.namespace-prompt-profiles-header p {
+  margin: 0;
+  color: #616161;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.namespace-prompt-profiles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.namespace-prompt-profile-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.namespace-prompt-profile-row-name {
+  font-weight: 600;
+  color: #2c3e50;
+  word-break: break-word;
+}
+
+.namespace-prompt-profile-row-meta {
+  color: #757575;
+  font-size: 12px;
+}
+
+.namespace-prompt-profile-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.namespace-prompt-profile-empty {
+  padding: 8px 10px;
+  color: #757575;
+  font-size: 13px;
+  border: 1px dashed #d0d0d0;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.namespace-prompt-profile-form {
+  display: grid;
+  gap: 6px;
+}
+
+.namespace-prompt-profile-form label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #424242;
+}
+
+.namespace-prompt-profile-form input,
+.namespace-prompt-profile-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.namespace-prompt-profile-form textarea {
+  resize: vertical;
+}
+
+.namespace-prompt-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.namespace-prompt-profile-status {
+  color: #616161;
+  font-size: 13px;
 }
 
 .btn-sm {
@@ -524,6 +640,46 @@ body {
   font-size: 13px;
   color: #424242;
   border-bottom: 2px solid #e0e0e0;
+}
+
+.persistent-table-view th.sortable-column {
+  cursor: pointer;
+  user-select: none;
+}
+
+.persistent-table-view th.sortable-column:hover {
+  background: #eeeeee;
+}
+
+.sort-indicator {
+  display: inline-block;
+  min-width: 12px;
+  margin-left: 6px;
+  color: #1976d2;
+  font-size: 11px;
+}
+
+.table-filter-row th {
+  padding: 6px 8px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #fafafa;
+}
+
+.table-filter-row input {
+  width: 100%;
+  min-width: 80px;
+  padding: 5px 7px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+}
+
+.table-filter-row input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.12);
 }
 
 .data-grid td {
@@ -1347,7 +1503,7 @@ input[type="checkbox"] {
   color: #d4d4d4;
 }
 
-/* Directory Files Display */
+/* Folder Files Display */
 .directory-path-link {
   cursor: pointer;
   color: #1976d2;
@@ -1393,6 +1549,10 @@ input[type="checkbox"] {
   font-size: 12px;
   color: #424242;
   border-bottom: 1px solid #e0e0e0;
+}
+
+.directory-files-table .table-filter-row th {
+  padding: 6px 8px;
 }
 
 .directory-files-table td {
@@ -1571,6 +1731,111 @@ input[type="checkbox"] {
   border-radius: 4px;
   font-size: 14px;
   font-family: inherit;
+}
+
+.llm-api-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+  max-width: 900px;
+}
+
+.llm-api-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-api-field label,
+.llm-api-pane label {
+  font-weight: 600;
+  color: #424242;
+  font-size: 14px;
+}
+
+.llm-api-field select {
+  min-width: 240px;
+  max-width: min(420px, 100%);
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.llm-api-url-row {
+  max-width: 900px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #424242;
+}
+
+.llm-api-url-row code {
+  color: #1976d2;
+  word-break: break-all;
+}
+
+.llm-api-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  max-width: 900px;
+}
+
+.llm-api-pane {
+  min-width: 0;
+}
+
+.llm-api-pane textarea,
+.llm-api-pane pre {
+  width: 100%;
+  min-height: 340px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.llm-api-pane textarea {
+  resize: vertical;
+}
+
+.llm-api-pane pre {
+  background: #fafafa;
+}
+
+.llm-api-response-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+#llm-api-send-status {
+  color: #757575;
+  font-size: 13px;
+}
+
+.llm-api-actions {
+  margin-top: 12px;
+}
+
+@media (max-width: 900px) {
+  .llm-api-editor-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .llm-tester-transcript {
