@@ -26,6 +26,21 @@ function openAiError(res, status, message) {
   });
 }
 
+function applyPermissiveCors(app) {
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Froggy-Namespace, x-froggy-namespace'
+    );
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    return next();
+  });
+}
+
 class PassthroughInboundService {
   /**
    * @param {*} ragService
@@ -49,6 +64,7 @@ class PassthroughInboundService {
   _ollamaApp() {
     const app = express();
     app.use(express.json({ limit: '20mb' }));
+    applyPermissiveCors(app);
     attachHttpRequestLogger(app, this.ragService, 'inbound-ollama', (entry) => {
       if (this._onRequestLogged) this._onRequestLogged(entry);
     });
@@ -91,6 +107,7 @@ class PassthroughInboundService {
   _openAiApp() {
     const app = express();
     app.use(express.json({ limit: '20mb' }));
+    applyPermissiveCors(app);
     attachHttpRequestLogger(app, this.ragService, 'inbound-openai', (entry) => {
       if (this._onRequestLogged) this._onRequestLogged(entry);
     });
