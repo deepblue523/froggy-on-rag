@@ -70,7 +70,7 @@
     ],
     "publish": {
       "provider": "github",
-      "owner": "deepblue523",
+      "owner": "froggy523",
       "repo": "froggy-mcp-rag"
     },
     "win": {
