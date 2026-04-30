@@ -280,6 +280,19 @@ function normalizeFroggyPayload(value) {
   return value;
 }
 
+function stripFroggySections(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripFroggySections(item));
+  }
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (String(key).trim().toLowerCase() === 'froggy') continue;
+    out[key] = stripFroggySections(raw);
+  }
+  return out;
+}
+
 function normalizePositiveInt(value, fallback, max) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 1) return fallback;
@@ -849,13 +862,13 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
   let upstreamJson;
   if (outbound === 'ollama') {
     const url = `${baseUrl}/api/chat`;
-    const body = {
+    const body = stripFroggySections({
       model,
       messages: augmented,
       stream: false
-    };
+    });
     if (inboundBody && inboundBody.options && typeof inboundBody.options === 'object') {
-      body.options = inboundBody.options;
+      body.options = stripFroggySections(inboundBody.options);
     }
     upstreamJson = await postJson(url, body, {}, timeoutMs, upstreamAbortSignal);
   } else {
@@ -864,7 +877,7 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     if (apiKey) {
       headers.Authorization = `Bearer ${apiKey}`;
     }
-    const body = {
+    const body = stripFroggySections({
       model,
       messages: augmented,
       stream: false,
@@ -872,7 +885,7 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
         typeof inboundBody.temperature === 'number' && Number.isFinite(inboundBody.temperature)
           ? inboundBody.temperature
           : 0.7
-    };
+    });
     if (typeof inboundBody.max_tokens === 'number' && Number.isFinite(inboundBody.max_tokens)) {
       body.max_tokens = inboundBody.max_tokens;
     }
@@ -907,6 +920,7 @@ module.exports = {
     buildRagMetadataSection,
     collectRetrievedMetadata,
     normalizeFroggyMetadata,
-    resolveFroggyConfig
+    resolveFroggyConfig,
+    stripFroggySections
   }
 };

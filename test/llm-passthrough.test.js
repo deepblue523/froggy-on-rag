@@ -12,7 +12,8 @@ const {
   buildRagMetadataSection,
   collectRetrievedMetadata,
   normalizeFroggyMetadata,
-  resolveFroggyConfig
+  resolveFroggyConfig,
+  stripFroggySections
 } = __testing;
 const paths = require('../src/paths');
 
@@ -256,4 +257,30 @@ test('buildRagMetadataSection uses none for absent optional metadata', () => {
   assert.match(section, /- prompt profile: none/);
   assert.match(section, /Retrieved Tags:\n- none/);
   assert.match(section, /Retrieved metadata:\n- none/);
+});
+
+test('stripFroggySections removes froggy keys recursively', () => {
+  const sanitized = stripFroggySections({
+    model: 'qwen',
+    froggy: { namespace: 'general', rag: true },
+    options: {
+      temperature: 0.2,
+      froggy: { tags: ['phi'] }
+    },
+    messages: [
+      { role: 'user', content: 'hello', froggy: { test: true } },
+      { role: 'assistant', content: 'world' }
+    ]
+  });
+
+  assert.deepEqual(sanitized, {
+    model: 'qwen',
+    options: {
+      temperature: 0.2
+    },
+    messages: [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'world' }
+    ]
+  });
 });
