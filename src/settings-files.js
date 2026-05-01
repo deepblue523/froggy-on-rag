@@ -175,7 +175,7 @@ function getDefaultSettings() {
     passthroughOllamaListenPort: 11435,
     passthroughOpenAiListenEnabled: false,
     passthroughOpenAiListenPort: 18080,
-    /** When true, MCP REST and inbound passthrough HTTP requests are appended to a rolling on-disk log. */
+    /** When true, RAG REST (/admin, /store, …) and inbound passthrough HTTP requests are appended to a rolling on-disk log. */
     mcpRequestLoggingEnabled: false,
     /** Entries older than this many days are dropped when the log is updated or read. */
     mcpRequestLogRetentionDays: 7

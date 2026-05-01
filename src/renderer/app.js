@@ -1320,7 +1320,7 @@ async function initializeApp() {
     await refreshVectorStore();
   });
 
-  window.electronAPI.onMCPServerRequestLog((entry) => {
+  window.electronAPI.onRagRestServerRequestLog((entry) => {
     appendServerRequestLogRow(entry);
   });
 
@@ -1499,7 +1499,7 @@ function setupEventListeners() {
     const settings = await window.electronAPI.getSettings();
     const port = settings.serverPort || 3000;
     try {
-      await window.electronAPI.startMCPServer(port);
+      await window.electronAPI.startRagRestServer(port);
       await refreshServerStatus();
     } catch (error) {
       alert(`Error starting server: ${error.message}`);
@@ -1508,7 +1508,7 @@ function setupEventListeners() {
 
   document.getElementById('stop-server-btn').addEventListener('click', async () => {
     try {
-      await window.electronAPI.stopMCPServer();
+      await window.electronAPI.stopRagRestServer();
       await refreshServerStatus();
     } catch (error) {
       alert(`Error stopping server: ${error.message}`);
@@ -1711,11 +1711,11 @@ function setupEventListeners() {
           }
           if (statusEl) statusEl.textContent = 'Done (via direct IPC).';
         } else {
-          const mcpStatus = await window.electronAPI.getMCPServerStatus();
+          const ragRestStatus = await window.electronAPI.getRagRestServerStatus();
           const inboundHost = String(
             settings.llmPassthroughTestInboundHostname || '127.0.0.1'
           ).trim() || '127.0.0.1';
-          const target = pickInboundLlmPassthroughEndpoint(mcpStatus, inboundHost);
+          const target = pickInboundLlmPassthroughEndpoint(ragRestStatus, inboundHost);
           if (!target) {
             chat.messages.pop();
             saveLlmTesterChatStore(store);
@@ -2519,8 +2519,8 @@ async function refreshAppStatusBar() {
   storeEl.classList.remove('status-bar-error');
 
   try {
-    const [mcp, stats, ns] = await Promise.all([
-      window.electronAPI.getMCPServerStatus(),
+    const [ragRest, stats, ns] = await Promise.all([
+      window.electronAPI.getRagRestServerStatus(),
       window.electronAPI.getVectorStoreStats(),
       window.electronAPI.getActiveNamespace()
     ]);
@@ -2529,21 +2529,21 @@ async function refreshAppStatusBar() {
     nsEl.textContent = `Namespace: ${nsLabel}`;
 
     serverEl.textContent = '';
-    if (mcp.running && mcp.port) {
-      serverEl.appendChild(document.createTextNode('MCP server: '));
+    if (ragRest.running && ragRest.port) {
+      serverEl.appendChild(document.createTextNode('RAG REST: '));
       const run = document.createElement('span');
       run.className = 'status-bar-running';
-      run.textContent = `running (port ${mcp.port})`;
+      run.textContent = `running (port ${ragRest.port})`;
       serverEl.appendChild(run);
     } else {
-      serverEl.appendChild(document.createTextNode('MCP server: '));
+      serverEl.appendChild(document.createTextNode('RAG REST: '));
       const st = document.createElement('span');
       st.className = 'status-bar-stopped';
       st.textContent = 'stopped';
       serverEl.appendChild(st);
     }
 
-    setStatusBarPassthrough(passthroughEl, mcp.inboundPassthrough);
+    setStatusBarPassthrough(passthroughEl, ragRest.inboundPassthrough);
 
     const docs = stats.documentCount ?? 0;
     const chunks = stats.chunkCount ?? 0;
@@ -2553,7 +2553,7 @@ async function refreshAppStatusBar() {
     console.error('refreshAppStatusBar', e);
     nsEl.textContent = 'Namespace: —';
     nsEl.classList.add('status-bar-error');
-    serverEl.textContent = 'MCP server: unavailable';
+    serverEl.textContent = 'RAG REST: unavailable';
     serverEl.classList.add('status-bar-error');
     passthroughEl.textContent = 'LLM passthrough: unavailable';
     passthroughEl.classList.add('status-bar-error');
@@ -3416,13 +3416,13 @@ function addDropdownItem(dropdown, query) {
 }
 
 async function refreshServerStatus() {
-  const status = await window.electronAPI.getMCPServerStatus();
+  const status = await window.electronAPI.getRagRestServerStatus();
   const statusText = document.getElementById('server-status-text');
   const startBtn = document.getElementById('start-server-btn');
   const stopBtn = document.getElementById('stop-server-btn');
   const endpointsSection = document.getElementById('server-endpoints');
   const restUrlSpan = document.getElementById('rest-url-value');
-  const mcpUrlSpan = document.getElementById('mcp-url-value');
+  const adminUrlSpan = document.getElementById('admin-url-value');
   const endpointsTbody = document.getElementById('endpoints-tbody');
   
   statusText.textContent = status.running ? `Running on port ${status.port}` : 'Stopped';
@@ -3439,7 +3439,9 @@ async function refreshServerStatus() {
     
     // Display URLs
     restUrlSpan.textContent = status.restUrl || `http://localhost:${status.port}`;
-    mcpUrlSpan.textContent = status.mcpUrl || `http://localhost:${status.port}/mcp`;
+    if (adminUrlSpan) {
+      adminUrlSpan.textContent = status.adminUrl || `http://localhost:${status.port}/admin`;
+    }
     
     // Setup copy buttons
     setupCopyButtons();
@@ -3447,9 +3449,7 @@ async function refreshServerStatus() {
     // Define available endpoints
     const endpoints = [
       { method: 'GET', path: '/health', description: 'Health check endpoint', requiresPayload: false, requiresParams: false },
-      { method: 'GET', path: '/status', description: 'Server status (port, MCP URL, admin URL, store URL)', requiresPayload: false, requiresParams: false },
-      { method: 'GET', path: '/mcp', description: 'MCP endpoint metadata (use POST for JSON-RPC)', requiresPayload: false, requiresParams: false },
-      { method: 'POST', path: '/mcp', description: 'MCP protocol — JSON-RPC 2.0 (initialize, tools/list, tools/call, …)', requiresPayload: true, requiresParams: false },
+      { method: 'GET', path: '/status', description: 'Server status (port, admin URL, store URL)', requiresPayload: false, requiresParams: false },
       { method: 'GET', path: '/admin/stats', description: 'Vector store statistics (?namespace= for a specific corpus)', requiresPayload: false, requiresParams: false },
       { method: 'POST', path: '/admin/corpus-search', description: 'Search corpus (body: query, optional namespace)', requiresPayload: true, requiresParams: false },
       { method: 'GET', path: '/admin/documents', description: 'List documents (?namespace= scopes one corpus)', requiresPayload: false, requiresParams: false },
@@ -3551,8 +3551,8 @@ function setupCopyButtons() {
       
       if (urlType === 'rest') {
         urlToCopy = document.getElementById('rest-url-value').textContent;
-      } else if (urlType === 'mcp') {
-        urlToCopy = document.getElementById('mcp-url-value').textContent;
+      } else if (urlType === 'admin') {
+        urlToCopy = document.getElementById('admin-url-value').textContent;
       }
       
       if (urlToCopy) {
@@ -3589,7 +3589,7 @@ async function refreshServerRequestLogs() {
 
   if (hint) {
     hint.textContent = settings.mcpRequestLoggingEnabled
-      ? 'HTTP requests to the MCP REST server and inbound LLM passthrough listeners are recorded below (newest at bottom).'
+      ? 'HTTP requests to the RAG REST server (/admin, /store, …) and inbound LLM passthrough listeners are recorded below (newest at bottom).'
       : 'Request logging is off. Enable it under Settings → Logging, then use Refresh to load entries.';
   }
 
@@ -3599,7 +3599,7 @@ async function refreshServerRequestLogs() {
   }
 
   try {
-    const logs = await window.electronAPI.getMCPServerRequestLogs(1500);
+    const logs = await window.electronAPI.getRagRestServerRequestLogs(1500);
     if (Array.isArray(logs)) {
       logs.forEach((row) => appendServerRequestLogRow(row, false));
     }
@@ -4571,7 +4571,7 @@ async function persistLlmTestRetrievalSettingsFromInputs() {
 }
 
 /**
- * @param {{ inboundPassthrough?: object } | null | undefined} status from getMCPServerStatus()
+ * @param {{ inboundPassthrough?: object } | null | undefined} status from getRagRestServerStatus()
  * @param {unknown} [inboundHostname] host for the test client URL (optional explicit :port overrides listener port)
  * @returns {{ kind: 'openai' | 'ollama', url: string } | null}
  */
@@ -4658,7 +4658,7 @@ function selectedLlmApiKind() {
 
 async function getSelectedLlmApiTarget() {
   const settings = await window.electronAPI.getSettings();
-  const status = await window.electronAPI.getMCPServerStatus();
+  const status = await window.electronAPI.getRagRestServerStatus();
   const inboundHost = String(settings.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
   return {
     settings,
@@ -4931,14 +4931,14 @@ async function refreshLlmPassthroughPanel(overrides) {
       sendBtn.disabled = false;
       return;
     }
-    let mcpStatus = null;
+    let ragRestStatus = null;
     try {
-      mcpStatus = await window.electronAPI.getMCPServerStatus();
+      ragRestStatus = await window.electronAPI.getRagRestServerStatus();
     } catch {
-      mcpStatus = null;
+      ragRestStatus = null;
     }
     const inboundHost = String(s.llmPassthroughTestInboundHostname || '127.0.0.1').trim() || '127.0.0.1';
-    const inbound = pickInboundLlmPassthroughEndpoint(mcpStatus, inboundHost);
+    const inbound = pickInboundLlmPassthroughEndpoint(ragRestStatus, inboundHost);
     if (!inbound) {
       hint.textContent = `Upstream: ${prov} at ${base}, model "${model}". Inbound HTTP test: enable at least one listener under Settings → LLM Passthrough until status shows listening — or switch Test transport to Direct IPC to skip HTTP.`;
       sendBtn.disabled = true;
@@ -5274,7 +5274,7 @@ function applyAllSettingsModalFieldsToSettings(settings) {
         return { ok: false, message: 'Ollama inbound port must be between 1024 and 65535.' };
       }
       if (ollamaListenPort === serverPort) {
-        return { ok: false, message: 'Ollama inbound port cannot match the MCP server port.' };
+        return { ok: false, message: 'Ollama inbound port cannot match the RAG REST server port.' };
       }
     }
     if (passthroughOpenAiListenEnabled) {
@@ -5282,7 +5282,7 @@ function applyAllSettingsModalFieldsToSettings(settings) {
         return { ok: false, message: 'OpenAI inbound port must be between 1024 and 65535.' };
       }
       if (openAiListenPort === serverPort) {
-        return { ok: false, message: 'OpenAI inbound port cannot match the MCP server port.' };
+        return { ok: false, message: 'OpenAI inbound port cannot match the RAG REST server port.' };
       }
     }
     if (
@@ -5317,17 +5317,17 @@ async function persistSettingsModal() {
 
     if (prevPassthroughEnabled !== nextPassthroughEnabled) {
       try {
-        const status = await window.electronAPI.getMCPServerStatus();
+        const status = await window.electronAPI.getRagRestServerStatus();
         if (nextPassthroughEnabled) {
           if (!status.running) {
             const port = settings.serverPort || 3000;
-            await window.electronAPI.startMCPServer(port);
+            await window.electronAPI.startRagRestServer(port);
           }
         } else if (status.running) {
-          await window.electronAPI.stopMCPServer();
+          await window.electronAPI.stopRagRestServer();
         }
       } catch (e) {
-        console.error('MCP server start/stop after LLM Passthrough toggle', e);
+        console.error('RAG REST server start/stop after LLM Passthrough toggle', e);
         alert(e.message || String(e));
       }
     }
@@ -5359,11 +5359,11 @@ async function loadGeneralSettings() {
 async function checkAndAutoStartServer() {
   const settings = await window.electronAPI.getSettings();
   if (settings.autoStartServer) {
-    const status = await window.electronAPI.getMCPServerStatus();
+    const status = await window.electronAPI.getRagRestServerStatus();
     if (!status.running) {
       const port = settings.serverPort || 3000;
       try {
-        await window.electronAPI.startMCPServer(port);
+        await window.electronAPI.startRagRestServer(port);
         await refreshServerStatus();
       } catch (error) {
         console.error('Error auto-starting server:', error);
@@ -5598,7 +5598,7 @@ async function performSelfTest() {
   const selfTestBtn = document.getElementById('self-test-btn');
   if (!selfTestBtn) return;
   
-  const status = await window.electronAPI.getMCPServerStatus();
+  const status = await window.electronAPI.getRagRestServerStatus();
   if (!status.running || !status.port) {
     alert('Server is not running');
     return;
@@ -5678,17 +5678,6 @@ async function getDefaultPayload(endpointPath) {
     defaultPayload = { filePath: '', watch: false };
   } else if (endpointPath === '/admin/ingest/directory') {
     defaultPayload = { dirPath: '', recursive: false, watch: false };
-  } else if (endpointPath === '/mcp') {
-    defaultPayload = {
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-06-18',
-        capabilities: {},
-        clientInfo: { name: 'froggy-ui-tester', version: '1.0.0' }
-      },
-      id: 1
-    };
   }
   return defaultPayload;
 }

@@ -1,0 +1,22 @@
+---
+alwaysApply: true
+---
+---
+description: Write tests after confirming a bug fix
+alwaysApply: true
+---
+
+# Tests After Bug Fixes
+
+When fixing broken or incorrect functionality:
+
+1. **Fix first.** Confirm the fix is correct and the feature works as intended.
+2. **Then write a test** that covers the fixed behavior so the same regression
+   cannot reappear silently.
+3. Place the test alongside the existing test files in `tests/` following the
+   project's naming conventions (e.g. `tests/featureName.test.js`).
+4. The test should assert the **correct** behavior, not just the absence of the
+   old bug — make sure the happy path is covered.
+5. If a relevant test file already exists, add the new case there instead of
+   creating a separate file.
+6. **Run any new tests that were created** after the fix to verify the fix.

@@ -5,11 +5,14 @@ const { getAppRoot } = require('../../paths');
 const MAX_ENTRIES = 10000;
 
 function requestLogFilePath() {
+  return path.join(getAppRoot(), 'http-request-log.json');
+}
+
+function legacyRequestLogFilePath() {
   return path.join(getAppRoot(), 'mcp-request-log.json');
 }
 
-function readEntriesFromDisk() {
-  const file = requestLogFilePath();
+function readEntriesFromFile(file) {
   try {
     if (!fs.existsSync(file)) return [];
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -17,6 +20,12 @@ function readEntriesFromDisk() {
   } catch {
     return [];
   }
+}
+
+function readEntriesFromDisk() {
+  const primary = readEntriesFromFile(requestLogFilePath());
+  if (primary.length) return primary;
+  return readEntriesFromFile(legacyRequestLogFilePath());
 }
 
 function writeEntriesToDisk(entries) {
@@ -58,7 +67,7 @@ function appendRequestLog(ragService, partial) {
     path: String((partial && partial.path) || ''),
     statusCode: Number((partial && partial.statusCode) || 0) || 0,
     durationMs: Number((partial && partial.durationMs) || 0) || 0,
-    source: String((partial && partial.source) || 'mcp-rest')
+    source: String((partial && partial.source) || 'rag-rest')
   };
 
   let entries = pruneByRetention(readEntriesFromDisk(), retentionDays);
@@ -117,5 +126,6 @@ module.exports = {
   appendRequestLog,
   getRequestLogs,
   attachHttpRequestLogger,
-  requestLogFilePath
+  requestLogFilePath,
+  legacyRequestLogFilePath
 };

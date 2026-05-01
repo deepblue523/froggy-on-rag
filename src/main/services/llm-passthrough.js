@@ -1,9 +1,9 @@
 /**
- * RAG-augmented chat: retrieve chunks from the corpus (same scoping as MCP search), then call Ollama or an OpenAI-compatible API.
+ * RAG-augmented chat: retrieve chunks from the corpus (same scoping as Search / admin REST), then call Ollama or an OpenAI-compatible API.
  */
 
-const { searchCorpusInNamespaces } = require('./mcp/corpus-namespace-query');
-const { inferDefaultCorpusNamespaceName } = require('./mcp/namespace-scope');
+const { searchCorpusInNamespaces } = require('./rag-rest/corpus-namespace-query');
+const { inferDefaultCorpusNamespaceName } = require('./rag-rest/namespace-scope');
 const { searchGoogleCustomSearch } = require('./web-search');
 const path = require('path');
 const paths = require('../../paths');

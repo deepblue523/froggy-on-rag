@@ -1,11 +1,8 @@
 {
-  "name": "froggy-rag-mcp",
+  "name": "froggy-on-rag",
   "version": "1.2.5",
-  "description": "Turnkey RAG system with MCP server and UI",
+  "description": "Local RAG desktop app with LLM passthrough and corpus REST API",
   "main": "src/main/main.js",
-  "bin": {
-    "froggy-rag-mcp": "./src/cli/mcp-cli.js"
-  },
   "scripts": {
     "start": "electron .",
     "dev": "cross-env NODE_OPTIONS=--max-old-space-size=8192 electron . --dev",
@@ -19,13 +16,11 @@
     "version:minor": "node scripts/bump-version.js minor",
     "version:major": "node scripts/bump-version.js major",
     "release": "npm run version:patch && npm run build:publish",
-    "postinstall": "node scripts/electron-rebuild-native.cjs",
-    "mcp-stdio": "node src/cli/mcp-cli.js",
-    "mcp": "node src/cli/mcp-cli.js"
+    "postinstall": "node scripts/electron-rebuild-native.cjs"
   },
   "keywords": [
     "rag",
-    "mcp",
+    "llm",
     "electron",
     "vector-store"
   ],

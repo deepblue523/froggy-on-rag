@@ -5,7 +5,7 @@
 
 const express = require('express');
 const { completeChatProxy, getActiveLlmPassthroughUpstream } = require('./llm-passthrough');
-const { attachHttpRequestLogger } = require('./mcp-request-log');
+const { attachHttpRequestLogger } = require('./http-request-log');
 
 function readNamespaceFromReq(req) {
   const h = req.headers['x-froggy-namespace'];
@@ -224,7 +224,7 @@ class PassthroughInboundService {
       return;
     }
 
-    const mcpPort = s.serverPort || 3000;
+    const ragRestPort = s.serverPort || 3000;
     const ollamaPort = parseInt(String(s.passthroughOllamaListenPort || 0), 10);
     const openAiPort = parseInt(String(s.passthroughOpenAiListenPort || 0), 10);
 
@@ -239,11 +239,11 @@ class PassthroughInboundService {
         this.log('error', 'Inbound passthrough invalid port', { kind, port });
         return;
       }
-      if (port === mcpPort) {
-        const msg = `Port ${port} is already used by the MCP server; pick another inbound port.`;
+      if (port === ragRestPort) {
+        const msg = `Port ${port} is already used by the RAG REST server; pick another inbound port.`;
         if (kind === 'ollama') this._ollamaError = msg;
         else this._openAiError = msg;
-        this.log('error', 'Inbound passthrough port conflict with MCP', { kind, port });
+        this.log('error', 'Inbound passthrough port conflict with RAG REST server', { kind, port });
         return;
       }
       try {
@@ -281,4 +281,7 @@ class PassthroughInboundService {
   }
 }
 
-module.exports = { PassthroughInboundService };
+module.exports = {
+  PassthroughInboundService,
+  __testing: { readNamespaceFromReq }
+};

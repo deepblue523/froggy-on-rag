@@ -3,11 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const appPaths = require('../paths');
 const { readJsonObject } = require('../settings-files');
-const { getRequestLogs } = require('./services/mcp-request-log');
+const { getRequestLogs } = require('./services/http-request-log');
 
 // Helper to wait for services to be ready
 let ragServiceRef = null;
-let mcpServiceRef = null;
+let ragRestServerRef = null;
 let servicesReady = false;
 let servicesReadyPromise = null;
 let servicesReadyResolve = null;
@@ -87,7 +87,7 @@ function updateActiveNamespacePromptProfiles(namespaceName, profiles) {
 }
 
 function waitForServices() {
-  if (servicesReady && ragServiceRef && mcpServiceRef) {
+  if (servicesReady && ragServiceRef && ragRestServerRef) {
     return Promise.resolve();
   }
   if (!servicesReadyPromise) {
@@ -98,7 +98,7 @@ function waitForServices() {
   return servicesReadyPromise;
 }
 
-module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getDataDir, inboundPassthrough, onSettingsSaved) {
+module.exports = function setupIpcHandlers(ipcMain, ragService, ragRestServer, getDataDir, inboundPassthrough, onSettingsSaved) {
   if (typeof getDataDir === 'function') {
     getDataDirFn = getDataDir;
   }
@@ -109,9 +109,9 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     onSettingsSavedFn = onSettingsSaved;
   }
   // Update service references if provided
-  if (ragService && mcpService) {
+  if (ragService && ragRestServer) {
     ragServiceRef = ragService;
-    mcpServiceRef = mcpService;
+    ragRestServerRef = ragRestServer;
     servicesReady = true;
     // Resolve any waiting promises
     if (servicesReadyResolve) {
@@ -121,15 +121,15 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     }
   } else {
     ragServiceRef = null;
-    mcpServiceRef = null;
+    ragRestServerRef = null;
     servicesReady = false;
   }
   
   // Only register handlers once - if already registered, just set up event listeners
   if (handlersRegistered) {
     // Set up event listeners if services are now available
-    if (ragService && mcpService) {
-      setupEventListeners(ragService, mcpService);
+    if (ragService && ragRestServer) {
+      setupEventListeners(ragService, ragRestServer);
     }
     return;
   }
@@ -235,32 +235,32 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
     return await ragServiceRef.search(query, limit, algorithm, options);
   });
 
-  // MCP Server handlers
-  ipcMain.handle('start-mcp-server', async (_, port = 3000) => {
+  // RAG REST server (corpus admin HTTP API)
+  ipcMain.handle('start-rag-rest-server', async (_, port = 3000) => {
     await waitForServices();
-    return await mcpServiceRef.start(port);
+    return await ragRestServerRef.start(port);
   });
 
-  ipcMain.handle('stop-mcp-server', async () => {
+  ipcMain.handle('stop-rag-rest-server', async () => {
     await waitForServices();
-    return mcpServiceRef.stop();
+    return await ragRestServerRef.stop();
   });
 
-  ipcMain.handle('get-mcp-server-status', async () => {
+  ipcMain.handle('get-rag-rest-server-status', async () => {
     await waitForServices();
-    const base = mcpServiceRef.getStatus();
+    const base = ragRestServerRef.getStatus();
     if (inboundPassthroughRef && typeof inboundPassthroughRef.getStatus === 'function') {
       return { ...base, inboundPassthrough: inboundPassthroughRef.getStatus() };
     }
     return base;
   });
 
-  ipcMain.handle('get-mcp-server-logs', async () => {
+  ipcMain.handle('get-rag-rest-server-logs', async () => {
     await waitForServices();
-    return mcpServiceRef.getLogs();
+    return ragRestServerRef.getLogs();
   });
 
-  ipcMain.handle('get-mcp-server-request-logs', async (_, limit) => {
+  ipcMain.handle('get-rag-rest-server-request-logs', async (_, limit) => {
     await waitForServices();
     return getRequestLogs(ragServiceRef, limit);
   });
@@ -522,16 +522,16 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, mcpService, getD
   });
 
   // Setup event forwarding (only if services are provided)
-  if (ragService && mcpService) {
-    setupEventListeners(ragService, mcpService);
+  if (ragService && ragRestServer) {
+    setupEventListeners(ragService, ragRestServer);
   }
 };
 
-function setupEventListeners(ragService, mcpService) {
+function setupEventListeners(ragService, ragRestServer) {
   // Remove existing listeners to avoid duplicates
   ragService.removeAllListeners('ingestion-update');
-  mcpService.removeAllListeners('log');
-  mcpService.removeAllListeners('request-log');
+  ragRestServer.removeAllListeners('log');
+  ragRestServer.removeAllListeners('request-log');
   
   ragService.on('ingestion-update', (data) => {
     try {
@@ -548,30 +548,30 @@ function setupEventListeners(ragService, mcpService) {
     }
   });
 
-  mcpService.on('log', (data) => {
+  ragRestServer.on('log', (data) => {
     try {
       const window = require('electron').BrowserWindow.getAllWindows()[0];
       if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-        window.webContents.send('mcp-server-log', data);
+        window.webContents.send('rag-rest-server-log', data);
       }
     } catch (error) {
       // Silently ignore errors when renderer frame is disposed
       // This can happen during long processing sequences if the window is closed
       if (!error.message.includes('Render frame was disposed')) {
-        console.error('Error sending mcp-server-log:', error);
+        console.error('Error sending rag-rest-server-log:', error);
       }
     }
   });
 
-  mcpService.on('request-log', (entry) => {
+  ragRestServer.on('request-log', (entry) => {
     try {
       const window = BrowserWindow.getAllWindows()[0];
       if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-        window.webContents.send('mcp-server-request-log', entry);
+        window.webContents.send('rag-rest-server-request-log', entry);
       }
     } catch (error) {
       if (!error.message.includes('Render frame was disposed')) {
-        console.error('Error sending mcp-server-request-log:', error);
+        console.error('Error sending rag-rest-server-request-log:', error);
       }
     }
   });

@@ -75,9 +75,7 @@ function createDistPackageJson() {
 
   // Update scripts to remove dev-only commands
   packageJson.scripts = {
-    start: packageJson.scripts.start,
-    mcp: packageJson.scripts.mcp,
-    'mcp-stdio': packageJson.scripts['mcp-stdio']
+    start: packageJson.scripts.start
   };
 
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
@@ -103,15 +101,6 @@ npm install
 ### Electron App (GUI)
 \`\`\`bash
 npm start
-\`\`\`
-
-### MCP Server (CLI)
-\`\`\`bash
-# Stdio mode (for MCP clients)
-npm run mcp-stdio
-
-# Or CLI tool mode
-npm run mcp search "your query"
 \`\`\`
 
 ## Building Installers
@@ -193,5 +182,5 @@ console.log(`\nLocation: ${distDir}`);
 console.log('\nTo run from distribution:');
 console.log('  1. cd dist');
 console.log('  2. npm install');
-console.log('  3. npm start (for Electron app) or npm run mcp (for CLI)');
+console.log('  3. npm start (Electron app)');
 

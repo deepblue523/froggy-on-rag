@@ -1,0 +1,14 @@
+---
+alwaysApply: true
+---
+---
+description: Store app config in project metadata, not localStorage
+alwaysApply: true
+---
+
+# Durable Config Storage
+
+- Do not store user or app configuration in `localStorage`.
+- Persist config values in the project metadata/config file so values survive cache/profile resets.
+- Use `localStorage` only for narrowly scoped migration from legacy keys or truly ephemeral debug toggles.
+- When migrating a legacy `localStorage` key, copy the value to config, save metadata, and remove the legacy key.

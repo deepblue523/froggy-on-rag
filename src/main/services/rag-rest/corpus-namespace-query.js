@@ -1,5 +1,5 @@
 /**
- * Shared corpus search across one or more namespace stores (used by MCP tools and admin REST).
+ * Shared corpus search across one or more namespace stores (LLM passthrough and admin REST).
  */
 
 const { VectorStore } = require('../vector-store');

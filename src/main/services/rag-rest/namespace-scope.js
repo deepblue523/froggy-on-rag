@@ -1,5 +1,5 @@
 /**
- * Corpus namespace resolution for MCP tools and admin REST.
+ * Corpus namespace resolution for admin REST, RAG search, and LLM passthrough.
  *
  * Each namespace maps to a separate SQLite corpus under the user data layout:
  *   ~/froggy-rag-mcp/data/<namespace>/vector_store.db

@@ -115,6 +115,9 @@ $RECYCLE.BIN/
 tmp/
 temp/
 
+# IDE
+./cursor/
+
 # Coverage and testing
 coverage/
 .nyc_output/

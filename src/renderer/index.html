@@ -430,11 +430,11 @@
                   </div>
                   <div class="server-url-item">
                     <div class="url-label">
-                      <strong>MCP Protocol URL:</strong>
+                      <strong>Admin API base:</strong>
                     </div>
                     <div class="url-value-container">
-                      <span class="url-value" id="mcp-url-value"></span>
-                      <button class="btn btn-secondary btn-copy" data-url-type="mcp" title="Copy to clipboard">
+                      <span class="url-value" id="admin-url-value"></span>
+                      <button class="btn btn-secondary btn-copy" data-url-type="admin" title="Copy to clipboard">
                         📋 Copy
                       </button>
                     </div>
@@ -459,7 +459,7 @@
           </div>
           <div id="server-canvas-panel-log" class="llm-canvas-tabpanel" role="tabpanel" aria-labelledby="server-canvas-tab-log-btn" hidden>
             <p id="server-request-log-hint" style="margin: 0 0 12px 0; font-size: 13px; color: #616161; line-height: 1.45;">
-              HTTP requests to the MCP REST server and inbound LLM passthrough listeners appear here when logging is enabled.
+              HTTP requests to the RAG REST server and inbound LLM passthrough listeners appear here when logging is enabled.
             </p>
             <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
               <button type="button" class="btn btn-secondary" id="server-request-log-refresh-btn">Refresh</button>
@@ -814,7 +814,7 @@
                       </div>
                     </div>
                     <p style="margin: 0; font-size: 12px; color: #757575; line-height: 1.5;">
-                      The port number on which the MCP server will listen for connections. Default is 3000.
+                      The port number on which the RAG REST server listens for /admin, /store, /health, and /status. Default is 3000.
                     </p>
                   </div>
 
@@ -827,12 +827,12 @@
                       </div>
                     </div>
                     <p style="margin: 0; font-size: 12px; color: #757575; line-height: 1.5;">
-                      When enabled, the MCP server will automatically start when the application launches using the configured port.
+                      When enabled, the RAG REST server will automatically start when the application launches using the configured port.
                     </p>
                   </div>
 
                   <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
-                    <p style="margin: 0; font-size: 13px; color: #757575;">Server port and auto-start apply when starting the MCP server. Configure inbound passthrough on the LLM Passthrough tab.</p>
+                    <p style="margin: 0; font-size: 13px; color: #757575;">Server port and auto-start apply when starting the RAG REST server. Configure inbound passthrough on the LLM Passthrough tab.</p>
                   </div>
                 </div>
 
@@ -843,7 +843,7 @@
                     <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">HTTP request log</h4>
                     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
                       <input type="checkbox" id="settings-mcp-request-logging-enabled-input" style="width: 18px; height: 18px; cursor: pointer;" />
-                      <label for="settings-mcp-request-logging-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Log MCP REST and inbound passthrough requests</label>
+                      <label for="settings-mcp-request-logging-enabled-input" style="font-weight: 500; color: #616161; cursor: pointer;">Log RAG REST and inbound passthrough requests</label>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px;">
                       <label for="settings-mcp-request-log-retention-days-input" style="font-weight: 500; color: #616161;">Retention period (days)</label>
@@ -903,7 +903,7 @@
                   <div class="server-settings-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
                     <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #424242;">Inbound HTTP passthrough</h4>
                     <p style="margin: 0 0 16px 0; font-size: 13px; color: #616161; line-height: 1.5;">
-                      Listen on extra local ports using the same wire formats as <strong>Ollama</strong> (<code>POST /api/chat</code>) or <strong>OpenAI</strong> (<code>POST /v1/chat/completions</code>). Each request is augmented with RAG from the active corpus (same rules as Search), then forwarded non-streamingly to the upstream configured above. Clients can point at Froggy instead of adding an MCP tool.
+                      Listen on extra local ports using the same wire formats as <strong>Ollama</strong> (<code>POST /api/chat</code>) or <strong>OpenAI</strong> (<code>POST /v1/chat/completions</code>). Each request is augmented with RAG from the active corpus (same rules as Search), then forwarded non-streamingly to the upstream configured above. Point your existing LLM client at Froggy on these ports.
                     </p>
                     <div style="padding: 16px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; margin-bottom: 20px;">
                       <p style="margin: 0; font-size: 13px; color: #5d4037; line-height: 1.5;">
@@ -912,7 +912,7 @@
                     </div>
                     <h5 style="margin: 0 0 10px 0; font-size: 14px; font-weight: 600; color: #424242;">Inbound listeners</h5>
                     <p style="margin: 0 0 16px 0; font-size: 12px; color: #757575; line-height: 1.5;">
-                      When <strong>LLM Passthrough</strong> is enabled above, choose at least one listener here. Inbound HTTP is independent of the MCP server (you can listen while MCP is stopped). Ports must differ from the MCP server port on the Server tab.
+                      When <strong>LLM Passthrough</strong> is enabled above, choose at least one listener here. Inbound HTTP is independent of the RAG REST server (you can listen while the REST server is stopped). Ports must differ from the RAG REST server port on the Server tab.
                     </p>
                     <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center; margin-bottom: 12px;">
                       <div style="display: flex; align-items: center; gap: 10px;">
@@ -946,7 +946,7 @@
                   <div class="web-search-settings-controls" style="padding: 20px; background: #f9f9f9; border-radius: 4px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
                     <h4 style="margin: 0 0 15px 0; font-size: 16px; font-weight: 600; color: #424242;">Google Custom Search</h4>
                     <p style="margin: 0 0 16px 0; font-size: 13px; color: #616161; line-height: 1.5;">
-                      Used by the <code>web_search</code> MCP tool. When enabled below, inbound LLM Passthrough also adds web snippets to the retrieved context alongside vector-store results.
+                      Used for optional web-augmented RAG context. When enabled below, inbound LLM Passthrough also adds web snippets alongside vector-store results.
                     </p>
                     <div style="display: flex; flex-direction: column; gap: 14px; max-width: 640px;">
                       <div>
@@ -1196,7 +1196,7 @@
       <div class="app-status-bar-inner">
         <span class="app-status-item" id="status-bar-namespace" title="Active data namespace"></span>
         <span class="app-status-sep" aria-hidden="true"></span>
-        <span class="app-status-item" id="status-bar-server" title="MCP HTTP server"></span>
+        <span class="app-status-item" id="status-bar-server" title="RAG REST HTTP server"></span>
         <span class="app-status-sep" aria-hidden="true"></span>
         <span class="app-status-item" id="status-bar-passthrough" title="Inbound LLM passthrough (Settings → LLM Passthrough)"></span>
         <span class="app-status-sep" aria-hidden="true"></span>

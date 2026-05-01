@@ -37,9 +37,8 @@ let splashWindow = null;
 /** True after `before-quit` so window `close` can proceed (tray quit, app menu exit, etc.). */
 let isAppQuitting = false;
 let tray = null;
-let mcpServer = null;
 let ragService = null;
-let mcpService = null;
+let ragRestServer = null;
 /** @type {import('./services/passthrough-inbound-server').PassthroughInboundService | null} */
 let passthroughInbound = null;
 let updateCheckIntervalId = null;
@@ -116,16 +115,16 @@ function ensureWindowOnScreen(bounds) {
 
 function attachServices() {
   const { RAGService } = require('./services/rag-service');
-  const { MCPService } = require('./services/mcp-service');
+  const { RagRestServer } = require('./services/rag-rest-server');
   const { PassthroughInboundService } = require('./services/passthrough-inbound-server');
   ragService = new RAGService(dataDir);
-  mcpService = new MCPService(ragService);
+  ragRestServer = new RagRestServer(ragService);
   passthroughInbound = new PassthroughInboundService(
     ragService,
-    (level, message, data) => mcpService.log(level, message, data),
-    (entry) => mcpService.emit('request-log', entry)
+    (level, message, data) => ragRestServer.log(level, message, data),
+    (entry) => ragRestServer.emit('request-log', entry)
   );
-  require('./ipc-handlers')(ipcMain, ragService, mcpService, () => dataDir, passthroughInbound, applySystemStartupSetting);
+  require('./ipc-handlers')(ipcMain, ragService, ragRestServer, () => dataDir, passthroughInbound, applySystemStartupSetting);
   void passthroughInbound.syncFromSettings();
 }
 
@@ -139,18 +138,18 @@ async function destroyServices() {
     passthroughInbound = null;
   }
   require('./ipc-handlers')(ipcMain, null, null, () => dataDir, null, applySystemStartupSetting);
-  if (mcpService) {
+  if (ragRestServer) {
     try {
-      await mcpService.stop();
+      await ragRestServer.stop();
     } catch (error) {
-      console.error('Error stopping MCP server:', error);
+      console.error('Error stopping RAG REST server:', error);
     }
   }
   if (ragService) {
     await ragService.dispose();
   }
   ragService = null;
-  mcpService = null;
+  ragRestServer = null;
 }
 
 // Initialize services early

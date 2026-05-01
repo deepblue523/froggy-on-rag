@@ -9,7 +9,7 @@ const {
 const { searchCorpusInNamespaces, mergeMetaWithNamespace } = require('./corpus-namespace-query');
 
 /**
- * Admin / store inspection and maintenance REST API (not MCP).
+ * Admin / store inspection and maintenance REST API for the RAG corpus.
  * Mounted at `/admin` and `/store` (same routes).
  *
  * Namespace query param (and optional JSON body `namespace` for POST):

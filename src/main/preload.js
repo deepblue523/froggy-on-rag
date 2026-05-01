@@ -66,12 +66,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Search
   search: (query, limit, algorithm, options) => ipcRenderer.invoke('search', query, limit, algorithm, options),
 
-  // MCP Server
-  startMCPServer: (port) => ipcRenderer.invoke('start-mcp-server', port),
-  stopMCPServer: () => ipcRenderer.invoke('stop-mcp-server'),
-  getMCPServerStatus: () => ipcRenderer.invoke('get-mcp-server-status'),
-  getMCPServerLogs: () => ipcRenderer.invoke('get-mcp-server-logs'),
-  getMCPServerRequestLogs: (limit) => ipcRenderer.invoke('get-mcp-server-request-logs', limit),
+  // RAG REST server (corpus admin API on configurable port)
+  startRagRestServer: (port) => ipcRenderer.invoke('start-rag-rest-server', port),
+  stopRagRestServer: () => ipcRenderer.invoke('stop-rag-rest-server'),
+  getRagRestServerStatus: () => ipcRenderer.invoke('get-rag-rest-server-status'),
+  getRagRestServerLogs: () => ipcRenderer.invoke('get-rag-rest-server-logs'),
+  getRagRestServerRequestLogs: (limit) => ipcRenderer.invoke('get-rag-rest-server-request-logs', limit),
   
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
@@ -108,11 +108,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onIngestionUpdate: (callback) => {
     ipcRenderer.on('ingestion-update', (_, data) => callback(data));
   },
-  onMCPServerLog: (callback) => {
-    ipcRenderer.on('mcp-server-log', (_, data) => callback(data));
+  onRagRestServerLog: (callback) => {
+    ipcRenderer.on('rag-rest-server-log', (_, data) => callback(data));
   },
-  onMCPServerRequestLog: (callback) => {
-    ipcRenderer.on('mcp-server-request-log', (_, data) => callback(data));
+  onRagRestServerRequestLog: (callback) => {
+    ipcRenderer.on('rag-rest-server-request-log', (_, data) => callback(data));
   },
   
   // Auto-update (GitHub Releases via electron-builder `build.publish`)

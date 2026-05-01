@@ -1,0 +1,16 @@
+---
+description: Core UX behavior rules
+alwaysApply: true
+---
+
+# UX & Dialog Principles
+
+## Dialog Behavior
+
+- **Explicit closure only.** Dialogs must never close on backdrop click or
+  click-off. The user must press a close/cancel button or a deliberate
+  keyboard shortcut (Escape is acceptable when it maps to Cancel).
+- **Always screen-centered.** Every dialog/modal must be centered both
+  horizontally and vertically in the viewport.
+- **No implicit dismissal of unsaved state.** If a dialog contains editable
+  fields, warn before discarding changes.
