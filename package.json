@@ -1,6 +1,6 @@
 {
   "name": "froggy-on-rag",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Local RAG desktop app with LLM passthrough and corpus REST API",
   "main": "src/main/main.js",
   "scripts": {
