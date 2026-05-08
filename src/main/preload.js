@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateDirectoryWatch: (dirPath, watch, recursive) => ipcRenderer.invoke('update-directory-watch', dirPath, watch, recursive),
   updateFileActive: (filePath, active) => ipcRenderer.invoke('update-file-active', filePath, active),
   updateDirectoryActive: (dirPath, active) => ipcRenderer.invoke('update-directory-active', dirPath, active),
+  updateFileAlwaysInject: (filePath, alwaysInject) =>
+    ipcRenderer.invoke('update-file-always-inject', filePath, alwaysInject),
+  updateDirectoryAlwaysInject: (dirPath, alwaysInject) =>
+    ipcRenderer.invoke('update-directory-always-inject', dirPath, alwaysInject),
   
   // Vector Store
   getDocuments: () => ipcRenderer.invoke('get-documents'),

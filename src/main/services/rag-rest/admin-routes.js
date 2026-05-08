@@ -1,10 +1,9 @@
 const express = require('express');
-const paths = require('../../../paths');
 const {
   resolveCorpusNamespaces,
   resolveIngestOrStatsTarget,
   assertCorpusExistsForNamespace,
-  withVectorStore
+  withCorpusForNamespace
 } = require('./namespace-scope');
 const { searchCorpusInNamespaces, mergeMetaWithNamespace } = require('./corpus-namespace-query');
 
@@ -47,7 +46,7 @@ function createAdminHandlers(ragService, log) {
           const stats = ragService.getVectorStoreStats();
           return res.json({ stats, namespace: target.namespace });
         }
-        const stats = withVectorStore(target.dataDir, (vs) => vs.getStats());
+        const stats = withCorpusForNamespace(ragService, target.namespace, (vs) => vs.getStats());
         return res.json({ stats, namespace: target.namespace });
       } catch (error) {
         log('error', 'Admin stats error', { error: error.message });
@@ -107,7 +106,7 @@ function createAdminHandlers(ragService, log) {
         for (const ns of resolved.namespaces) {
           const rows = resolved.usePrimaryForNamespace(ns)
             ? ragService.getDocuments()
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getDocuments());
+            : withCorpusForNamespace(ragService, ns, (vs) => vs.getDocuments());
           for (const doc of rows) {
             combined.push({ ...doc, namespace: ns });
           }
@@ -127,7 +126,7 @@ function createAdminHandlers(ragService, log) {
         if (qNs) {
           assertCorpusExistsForNamespace(String(qNs).trim());
           const ns = String(qNs).trim();
-          const doc = withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getDocument(documentId));
+          const doc = withCorpusForNamespace(ragService, ns, (vs) => vs.getDocument(documentId));
           if (!doc) {
             return res.status(404).json({ error: 'Document not found' });
           }
@@ -138,7 +137,7 @@ function createAdminHandlers(ragService, log) {
           const ns = resolved.namespaces[0];
           const doc = resolved.usePrimaryForNamespace(ns)
             ? ragService.getDocument(documentId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getDocument(documentId));
+            : withCorpusForNamespace(ragService, ns, (vs) => vs.getDocument(documentId));
           if (!doc) {
             return res.status(404).json({ error: 'Document not found' });
           }
@@ -148,7 +147,7 @@ function createAdminHandlers(ragService, log) {
         for (const ns of resolved.namespaces) {
           const doc = resolved.usePrimaryForNamespace(ns)
             ? ragService.getDocument(documentId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getDocument(documentId));
+            : withCorpusForNamespace(ragService, ns, (vs) => vs.getDocument(documentId));
           if (doc) hits.push({ doc, ns });
         }
         if (hits.length === 0) {
@@ -175,7 +174,7 @@ function createAdminHandlers(ragService, log) {
         if (qNs) {
           assertCorpusExistsForNamespace(String(qNs).trim());
           const ns = String(qNs).trim();
-          const chunks = withVectorStore(paths.getDataDirForNamespace(ns), (vs) =>
+          const chunks = withCorpusForNamespace(ragService, ns, (vs) =>
             vs.getDocumentChunks(documentId)
           );
           return res.json({
@@ -190,7 +189,7 @@ function createAdminHandlers(ragService, log) {
           const ns = resolved.namespaces[0];
           const chunks = resolved.usePrimaryForNamespace(ns)
             ? ragService.getDocumentChunks(documentId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) =>
+            : withCorpusForNamespace(ragService, ns, (vs) =>
                 vs.getDocumentChunks(documentId)
               );
           return res.json({
@@ -204,7 +203,7 @@ function createAdminHandlers(ragService, log) {
         for (const ns of resolved.namespaces) {
           const chunks = resolved.usePrimaryForNamespace(ns)
             ? ragService.getDocumentChunks(documentId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) =>
+            : withCorpusForNamespace(ragService, ns, (vs) =>
                 vs.getDocumentChunks(documentId)
               );
           if (chunks.length > 0) hits.push({ chunks, ns });
@@ -238,7 +237,7 @@ function createAdminHandlers(ragService, log) {
         if (qNs) {
           assertCorpusExistsForNamespace(String(qNs).trim());
           const ns = String(qNs).trim();
-          const chunk = withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getChunk(chunkId));
+          const chunk = withCorpusForNamespace(ragService, ns, (vs) => vs.getChunk(chunkId));
           if (!chunk) {
             return res.status(404).json({ error: 'Chunk not found' });
           }
@@ -251,7 +250,7 @@ function createAdminHandlers(ragService, log) {
           const ns = resolved.namespaces[0];
           const chunk = resolved.usePrimaryForNamespace(ns)
             ? ragService.getChunkContent(chunkId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getChunk(chunkId));
+            : withCorpusForNamespace(ragService, ns, (vs) => vs.getChunk(chunkId));
           if (!chunk) {
             return res.status(404).json({ error: 'Chunk not found' });
           }
@@ -263,7 +262,7 @@ function createAdminHandlers(ragService, log) {
         for (const ns of resolved.namespaces) {
           const chunk = resolved.usePrimaryForNamespace(ns)
             ? ragService.getChunkContent(chunkId)
-            : withVectorStore(paths.getDataDirForNamespace(ns), (vs) => vs.getChunk(chunkId));
+            : withCorpusForNamespace(ragService, ns, (vs) => vs.getChunk(chunkId));
           if (chunk) hits.push({ chunk, ns });
         }
         if (hits.length === 0) {

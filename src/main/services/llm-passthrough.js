@@ -193,12 +193,24 @@ function buildRagMetadataSection(results, config) {
   ].join('\n');
 }
 
-function formatSearchHitsForContext(results) {
-  if (!results || !results.length) {
-    return '';
+function isAlwaysInjectHit(r) {
+  return Boolean(r && r.metadata && r.metadata.alwaysInject === true);
+}
+
+function partitionAlwaysInjectHits(results) {
+  const standard = [];
+  const regular = [];
+  for (const r of results || []) {
+    if (isAlwaysInjectHit(r)) standard.push(r);
+    else regular.push(r);
   }
+  return { standard, regular };
+}
+
+function renderHitBlocks(results, label) {
   const blocks = [];
   let i = 1;
+  const tag = label ? ` ${label}` : '';
   for (const r of results) {
     if (r.chunks && Array.isArray(r.chunks)) {
       const meta = r.metadata || {};
@@ -208,7 +220,7 @@ function formatSearchHitsForContext(results) {
       for (const ch of r.chunks) {
         const text = (ch && ch.content) || '';
         if (!text.trim()) continue;
-        const lines = [`[${i++}] Source: ${src}`];
+        const lines = [`[${i++}]${tag} Source: ${src}`];
         lines.push(text.trim());
         blocks.push(lines.join('\n'));
       }
@@ -219,12 +231,61 @@ function formatSearchHitsForContext(results) {
       const src = `${baseSrc}${ns}`;
       const text = (r.content || '').trim();
       if (!text) continue;
-      const lines = [`[${i++}] Source: ${src}`];
+      const lines = [`[${i++}]${tag} Source: ${src}`];
       lines.push(text);
       blocks.push(lines.join('\n'));
     }
   }
   return blocks.join('\n\n---\n\n');
+}
+
+/**
+ * Render retrieved chunks for the LLM. Hits flagged `metadata.alwaysInject === true` are grouped
+ * (per namespace) into a "Standard context (always injected)" section at the top, followed by
+ * regular search hits. They keep their own numbering with an "(always-inject)" tag so the model
+ * can tell them apart from top-K retrieval results.
+ */
+function formatSearchHitsForContext(results) {
+  if (!results || !results.length) {
+    return '';
+  }
+
+  const { standard, regular } = partitionAlwaysInjectHits(results);
+  const sections = [];
+
+  if (standard.length) {
+    const byNamespace = new Map();
+    for (const r of standard) {
+      const ns =
+        (r && r.metadata && typeof r.metadata.namespace === 'string' && r.metadata.namespace.trim()) ||
+        '';
+      const key = ns || '_default';
+      if (!byNamespace.has(key)) byNamespace.set(key, []);
+      byNamespace.get(key).push(r);
+    }
+    const namespaceSections = [];
+    for (const [key, hits] of byNamespace.entries()) {
+      const heading = key === '_default'
+        ? '#### Standard context (always injected)'
+        : `#### Standard context (always injected) — namespace: ${key}`;
+      const body = renderHitBlocks(hits, '(always-inject)');
+      if (body.trim()) {
+        namespaceSections.push([heading, '', body].join('\n'));
+      }
+    }
+    if (namespaceSections.length) {
+      sections.push(namespaceSections.join('\n\n'));
+    }
+  }
+
+  if (regular.length) {
+    const body = renderHitBlocks(regular, '');
+    if (body.trim()) {
+      sections.push(body);
+    }
+  }
+
+  return sections.join('\n\n---\n\n');
 }
 
 function combineContextBlocks(localContextBlock, webContextBlock) {
@@ -921,6 +982,8 @@ module.exports = {
     collectRetrievedMetadata,
     normalizeFroggyMetadata,
     resolveFroggyConfig,
-    stripFroggySections
+    stripFroggySections,
+    partitionAlwaysInjectHits,
+    isAlwaysInjectHit
   }
 };

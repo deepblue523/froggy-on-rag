@@ -7,6 +7,7 @@ const chokidar = require('chokidar');
 const { VectorStore } = require('./vector-store');
 const { DocumentProcessor } = require('./document-processor');
 const { SearchService } = require('./search-service');
+const { VectorStorePool, DEFAULT_IDLE_TTL_MS } = require('./vector-store-pool');
 const { getAppSettingsPath } = require('../../paths');
 const { splitSettingsForPersist, writeAppAndNamespace, readMergedSettingsFromDisk } = require('../../settings-files');
 const { createLlmChunkAdvisor } = require('./llm-chunk-advisor');
@@ -52,6 +53,12 @@ class RAGService extends EventEmitter {
     
     // Settings (load before creating document processor)
     this.settings = this.loadSettings();
+
+    // Resident pool of VectorStore handles for non-active namespaces (passthrough + admin REST
+    // can target any namespace; opening/closing per request is wasteful and racy under load).
+    this.vectorStorePool = new VectorStorePool(this, {
+      idleTtlMs: this._resolvePoolIdleTtlMs(this.settings)
+    });
 
     // Load embedding model and create document processor
     this.loadEmbeddingModel();
@@ -101,6 +108,19 @@ class RAGService extends EventEmitter {
     return readMergedSettingsFromDisk(this.dataDir, this.appSettingsPath);
   }
 
+  /**
+   * Resolve the namespace VectorStore pool idle timeout from settings, falling back to a 5-minute
+   * default. Stored as milliseconds for parity with `llmPassthroughTimeoutMs`.
+   * @param {Record<string, unknown>} settings
+   */
+  _resolvePoolIdleTtlMs(settings) {
+    const v = settings && settings.corpusStoreIdleTimeoutMs;
+    if (Number.isFinite(v) && v > 0) {
+      return Math.floor(v);
+    }
+    return DEFAULT_IDLE_TTL_MS;
+  }
+
   _saveSettingsToDisk() {
     try {
       const { app, namespace } = splitSettingsForPersist(this.settings);
@@ -131,6 +151,10 @@ class RAGService extends EventEmitter {
 
     // Inbound HTTP master was merged into llmPassthroughEnabled; keep legacy flag aligned on every save.
     this.settings.passthroughListenEnabled = this.settings.llmPassthroughEnabled === true;
+
+    if (this.vectorStorePool) {
+      this.vectorStorePool.setIdleTtlMs(this._resolvePoolIdleTtlMs(this.settings));
+    }
 
     this._saveSettingsToDisk();
 
@@ -595,6 +619,36 @@ class RAGService extends EventEmitter {
       } else {
         this.unwatchDirectory(dir.path); // Use stored path format
       }
+    }
+  }
+
+  /**
+   * Toggle the "always inject" flag on a file entry. Chunks of always-inject files are prepended
+   * to every search result set as standard context (not counted toward topK).
+   * @param {string} filePath
+   * @param {boolean} alwaysInject
+   */
+  updateFileAlwaysInject(filePath, alwaysInject) {
+    const normalizedPath = path.resolve(filePath);
+    const fileEntry = this.settings.files.find((f) => path.resolve(f.path) === normalizedPath);
+    if (fileEntry) {
+      fileEntry.alwaysInject = alwaysInject === true;
+      this._saveSettingsToDisk();
+    }
+  }
+
+  /**
+   * Toggle the "always inject" flag on a folder entry. Chunks of always-inject folders are prepended
+   * to every search result set as standard context (not counted toward topK).
+   * @param {string} dirPath
+   * @param {boolean} alwaysInject
+   */
+  updateDirectoryAlwaysInject(dirPath, alwaysInject) {
+    const normalizedDirPath = path.resolve(dirPath);
+    const dirEntry = this.settings.directories.find((d) => path.resolve(d.path) === normalizedDirPath);
+    if (dirEntry) {
+      dirEntry.alwaysInject = alwaysInject === true;
+      this._saveSettingsToDisk();
     }
   }
 
@@ -1253,6 +1307,14 @@ class RAGService extends EventEmitter {
     }
 
     this.removeAllListeners();
+
+    if (this.vectorStorePool) {
+      try {
+        this.vectorStorePool.dispose();
+      } catch (error) {
+        console.error('Error disposing vector store pool:', error);
+      }
+    }
 
     try {
       this.vectorStore.close();

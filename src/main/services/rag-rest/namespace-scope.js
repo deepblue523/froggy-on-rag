@@ -177,6 +177,33 @@ async function withVectorStoreAsync(dataDir, fn) {
   }
 }
 
+/**
+ * Run `fn(vs)` with a VectorStore for `namespace`, picking the active corpus's in-memory store when
+ * the namespace is active, otherwise leasing from `ragService.vectorStorePool` (TTL idle close +
+ * ref counting). Falls back to a one-shot VectorStore when the pool isn't attached (e.g. tests).
+ *
+ * @param {{ dataDir?: string, vectorStore?: import('../vector-store').VectorStore, vectorStorePool?: import('../vector-store-pool').VectorStorePool }} ragService
+ * @param {string} namespace
+ * @param {(vs: import('../vector-store').VectorStore) => T} fn
+ * @returns {T}
+ * @template T
+ */
+function withCorpusForNamespace(ragService, namespace, fn) {
+  const ns = String(namespace || '').trim();
+  if (!ns) {
+    throw new Error('namespace is required');
+  }
+  if (ragService && ragService.vectorStorePool) {
+    const lease = ragService.vectorStorePool.acquire(ns);
+    try {
+      return fn(lease.vs);
+    } finally {
+      lease.release();
+    }
+  }
+  return withVectorStore(paths.getDataDirForNamespace(ns), fn);
+}
+
 module.exports = {
   normalizeNamespaceInput,
   inferDefaultCorpusNamespaceName,
@@ -185,5 +212,6 @@ module.exports = {
   resolveIngestOrStatsTarget,
   assertCorpusExistsForNamespace,
   withVectorStore,
-  withVectorStoreAsync
+  withVectorStoreAsync,
+  withCorpusForNamespace
 };

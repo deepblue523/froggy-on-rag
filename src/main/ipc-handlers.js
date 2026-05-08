@@ -198,6 +198,16 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, ragRestServer, g
     return ragServiceRef.updateDirectoryActive(dirPath, active);
   });
 
+  ipcMain.handle('update-file-always-inject', async (_, filePath, alwaysInject) => {
+    await waitForServices();
+    return ragServiceRef.updateFileAlwaysInject(filePath, alwaysInject);
+  });
+
+  ipcMain.handle('update-directory-always-inject', async (_, dirPath, alwaysInject) => {
+    await waitForServices();
+    return ragServiceRef.updateDirectoryAlwaysInject(dirPath, alwaysInject);
+  });
+
   // Vector Store handlers
   ipcMain.handle('get-documents', async () => {
     await waitForServices();
@@ -232,7 +242,35 @@ module.exports = function setupIpcHandlers(ipcMain, ragService, ragRestServer, g
   // Search handlers
   ipcMain.handle('search', async (_, query, limit = 10, algorithm = 'hybrid', options = {}) => {
     await waitForServices();
-    return await ragServiceRef.search(query, limit, algorithm, options);
+    const payload = await ragServiceRef.search(query, limit, algorithm, options);
+    // Prepend always-inject chunks (standard context) for the active namespace's primary store. They
+    // are tagged with metadata.alwaysInject = true and do not count toward topK.
+    try {
+      const { collectAlwaysInjectHits } = require('./services/rag-rest/always-inject');
+      const { inferDefaultCorpusNamespaceName } = require('./services/rag-rest/namespace-scope');
+      const ns = inferDefaultCorpusNamespaceName(ragServiceRef);
+      if (ns) {
+        const injectHits = collectAlwaysInjectHits(ragServiceRef, ns, ragServiceRef.vectorStore);
+        if (injectHits && injectHits.length) {
+          const mappedHits = injectHits.map((h) => ({
+            chunkId: h.chunkId,
+            documentId: h.documentId,
+            content: h.content,
+            score: h.score,
+            similarity: h.similarity,
+            algorithm: h.algorithm,
+            metadata: h.metadata
+          }));
+          return {
+            ...payload,
+            results: [...mappedHits, ...(payload.results || [])]
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[search] Failed to add always-inject chunks:', e && e.message ? e.message : e);
+    }
+    return payload;
   });
 
   // RAG REST server (corpus admin HTTP API)

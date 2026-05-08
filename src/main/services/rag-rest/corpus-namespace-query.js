@@ -1,10 +1,14 @@
 /**
  * Shared corpus search across one or more namespace stores (LLM passthrough and admin REST).
+ *
+ * Non-active namespaces are served from `ragService.vectorStorePool`, which keeps a resident
+ * handle per namespace (with TTL idle close + ref counting). This lets concurrent passthrough
+ * requests target different namespaces without thrashing SQLite handles.
  */
 
 const { VectorStore } = require('../vector-store');
-const paths = require('../../../paths');
 const { resolveCorpusNamespaces } = require('./namespace-scope');
+const { collectAlwaysInjectHits } = require('./always-inject');
 
 function mergeMetaWithNamespace(metadata, namespace) {
   const base =
@@ -52,18 +56,37 @@ async function searchCorpusInNamespaces(ragService, opts) {
   }
 
   const merged = [];
+  const alwaysInjectMerged = [];
   const warnings = [];
   const errors = [];
 
   for (const ns of resolved.namespaces) {
-    const dir = paths.getDataDirForNamespace(ns);
     const useP = resolved.usePrimaryForNamespace(ns);
+    /** @type {{ vs: VectorStore, release: () => void, primary: boolean } | null} */
+    let lease = null;
     const searchOpts = {};
-    /** @type {VectorStore | null} */
-    let vs = null;
     if (!useP) {
-      vs = new VectorStore(dir);
-      searchOpts.corpusVectorStore = vs;
+      // Fall back to a one-shot VectorStore when no pool is attached (e.g. tests with a stub
+      // ragService). In normal app runtime the pool is always present.
+      if (ragService && ragService.vectorStorePool) {
+        lease = ragService.vectorStorePool.acquire(ns);
+        searchOpts.corpusVectorStore = lease.vs;
+      } else {
+        const paths = require('../../../paths');
+        const tempVs = new VectorStore(paths.getDataDirForNamespace(ns));
+        lease = {
+          vs: tempVs,
+          primary: false,
+          release: () => {
+            try {
+              tempVs.close();
+            } catch {
+              /* ignore */
+            }
+          }
+        };
+        searchOpts.corpusVectorStore = lease.vs;
+      }
     }
     try {
       searchOpts.topK = lim;
@@ -76,8 +99,25 @@ async function searchCorpusInNamespaces(ragService, opts) {
       for (const r of payload.results || []) {
         merged.push(mapSearchHit(r, ns));
       }
+
+      // Always-inject chunks live alongside regular search results in the same store. They're
+      // collected per namespace so the standard-context section reflects the namespace scope.
+      const injectStore = useP ? ragService.vectorStore : lease && lease.vs;
+      try {
+        const injectHits = collectAlwaysInjectHits(ragService, ns, injectStore);
+        for (const h of injectHits) alwaysInjectMerged.push(h);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        warnings.push(`Failed to collect always-inject chunks for namespace "${ns}": ${msg}`);
+      }
     } finally {
-      if (vs) vs.close();
+      if (lease) {
+        try {
+          lease.release();
+        } catch (e) {
+          console.error(`[corpus-namespace-query] release error for "${ns}":`, e);
+        }
+      }
     }
   }
 
@@ -85,7 +125,7 @@ async function searchCorpusInNamespaces(ragService, opts) {
     merged.sort((a, b) => (b.score || 0) - (a.score || 0));
     const sliced = merged.slice(0, lim);
     return {
-      results: sliced,
+      results: [...alwaysInjectMerged, ...sliced],
       warnings,
       errors,
       scope: { mode: 'all', namespacesSearched: resolved.namespaces, note: scopeNote }
@@ -93,7 +133,7 @@ async function searchCorpusInNamespaces(ragService, opts) {
   }
 
   return {
-    results: merged,
+    results: [...alwaysInjectMerged, ...merged],
     warnings,
     errors,
     scope: { mode: 'single', namespace: resolved.namespaces[0] }

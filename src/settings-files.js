@@ -178,7 +178,14 @@ function getDefaultSettings() {
     /** When true, RAG REST (/admin, /store, …) and inbound passthrough HTTP requests are appended to a rolling on-disk log. */
     mcpRequestLoggingEnabled: false,
     /** Entries older than this many days are dropped when the log is updated or read. */
-    mcpRequestLogRetentionDays: 7
+    mcpRequestLogRetentionDays: 7,
+    /**
+     * Idle timeout (ms) for resident VectorStore handles cached when the API passthrough or admin
+     * REST routes target a non-active namespace. Concurrent requests for the same namespace share
+     * one open handle; once the last release lands, the handle is closed after this delay (or
+     * sooner if the namespace is re-acquired). Default: 5 minutes.
+     */
+    corpusStoreIdleTimeoutMs: 5 * 60 * 1000
   };
 }
 

@@ -53,6 +53,7 @@ const TABLE_COLUMNS = {
   files: [
     { key: 'path', label: 'File Path', value: file => file.path || '' },
     { key: 'status', label: 'Status', value: file => file._displayStatus || '' },
+    { key: 'alwaysInject', label: 'Always Inject', value: file => file.alwaysInject ? 'checked alwaysInject yes true' : 'no false' },
     { key: 'active', label: 'Active', value: file => file.active !== false ? 'checked active yes true' : 'inactive no false' },
     { key: 'watch', label: 'Watch', value: file => file.watch ? 'checked watch yes true' : 'no false' },
     { key: 'actions', label: 'Actions', filterable: false, sortable: false }
@@ -60,6 +61,7 @@ const TABLE_COLUMNS = {
   directories: [
     { key: 'path', label: 'Folder Path', value: dir => dir.path || '' },
     { key: 'recursive', label: 'Recursive', value: dir => dir.recursive ? 'checked recursive yes true' : 'no false' },
+    { key: 'alwaysInject', label: 'Always Inject', value: dir => dir.alwaysInject ? 'checked alwaysInject yes true' : 'no false' },
     { key: 'active', label: 'Active', value: dir => dir.active !== false ? 'checked active yes true' : 'inactive no false' },
     { key: 'watch', label: 'Watch', value: dir => dir.watch ? 'checked watch yes true' : 'no false' },
     { key: 'actions', label: 'Actions', filterable: false, sortable: false }
@@ -2189,7 +2191,7 @@ function renderFilesTable() {
 
   const files = applyPersistentTableView('files', latestFiles, TABLE_COLUMNS.files);
   if (files.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #757575;">No files match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #757575;">No files match the current filters.</td></tr>';
     return;
   }
 
@@ -2203,6 +2205,9 @@ function renderFilesTable() {
     row.innerHTML = `
       <td>${file.path}</td>
       <td><span class="status-badge status-${fileStatus}">${fileStatus}</span></td>
+      <td><input type="checkbox" ${file.alwaysInject ? 'checked' : ''} 
+          data-file-path="${escapedPath}" class="file-always-inject-checkbox"
+          title="Prepend this file's chunks as standard context on every search (does not count toward top-K)." /></td>
       <td><input type="checkbox" ${file.active !== false ? 'checked' : ''} 
           data-file-path="${escapedPath}" class="file-active-checkbox" /></td>
       <td><input type="checkbox" ${file.watch ? 'checked' : ''} 
@@ -2211,6 +2216,11 @@ function renderFilesTable() {
     `;
     
     // Add event listeners
+    const alwaysInjectCheckbox = row.querySelector('.file-always-inject-checkbox');
+    alwaysInjectCheckbox.addEventListener('change', async (e) => {
+      await window.updateFileAlwaysInject(file.path, e.target.checked);
+    });
+
     const activeCheckbox = row.querySelector('.file-active-checkbox');
     activeCheckbox.addEventListener('change', async (e) => {
       await window.updateFileActive(file.path, e.target.checked);
@@ -2248,7 +2258,7 @@ async function renderDirectoriesTable() {
 
   const directories = applyPersistentTableView('directories', latestDirectories, TABLE_COLUMNS.directories);
   if (directories.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #757575;">No folders match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #757575;">No folders match the current filters.</td></tr>';
     return;
   }
 
@@ -2294,7 +2304,18 @@ async function renderDirectoriesTable() {
       }
     });
     recursiveCell.appendChild(recursiveCheckbox);
-    
+
+    const alwaysInjectCell = document.createElement('td');
+    const alwaysInjectCheckbox = document.createElement('input');
+    alwaysInjectCheckbox.type = 'checkbox';
+    alwaysInjectCheckbox.checked = dir.alwaysInject === true;
+    alwaysInjectCheckbox.title =
+      "Prepend every chunk from this folder as standard context on every search (does not count toward top-K).";
+    alwaysInjectCheckbox.addEventListener('change', async () => {
+      await window.updateDirectoryAlwaysInject(dir.path, alwaysInjectCheckbox.checked);
+    });
+    alwaysInjectCell.appendChild(alwaysInjectCheckbox);
+
     const activeCell = document.createElement('td');
     const activeCheckbox = document.createElement('input');
     activeCheckbox.type = 'checkbox';
@@ -2325,6 +2346,7 @@ async function renderDirectoriesTable() {
     // Append all cells to row
     row.appendChild(pathCell);
     row.appendChild(recursiveCell);
+    row.appendChild(alwaysInjectCell);
     row.appendChild(activeCell);
     row.appendChild(watchCell);
     row.appendChild(actionsCell);
@@ -2368,7 +2390,7 @@ async function showDirectoryFiles(dirPath, directoryRow) {
     filesRow.className = 'directory-files-row';
     
     const filesCell = document.createElement('td');
-    filesCell.colSpan = 5; // Span all folder columns
+    filesCell.colSpan = 6; // Span all folder columns
     
     if (files.length === 0) {
       filesCell.innerHTML = '<div class="directory-files-empty">No files found in this folder</div>';
@@ -2427,7 +2449,7 @@ async function showDirectoryFiles(dirPath, directoryRow) {
     const errorRow = document.createElement('tr');
     errorRow.className = 'directory-files-row';
     errorRow.innerHTML = `
-      <td colspan="5" style="color: #d32f2f; padding: 10px;">
+      <td colspan="6" style="color: #d32f2f; padding: 10px;">
         Error loading files: ${error.message}
       </td>
     `;
@@ -3681,6 +3703,14 @@ window.updateDirectoryActive = async function(dirPath, active) {
   await window.electronAPI.updateDirectoryActive(dirPath, active);
   await refreshDirectories();
   await refreshVectorStore();
+};
+
+window.updateFileAlwaysInject = async function(filePath, alwaysInject) {
+  await window.electronAPI.updateFileAlwaysInject(filePath, alwaysInject);
+};
+
+window.updateDirectoryAlwaysInject = async function(dirPath, alwaysInject) {
+  await window.electronAPI.updateDirectoryAlwaysInject(dirPath, alwaysInject);
 };
 
 function resolveDroppedFilePath(file) {
