@@ -403,24 +403,106 @@ test('completeChatProxy rejects when LLM passthrough is disabled', async () => {
   );
 });
 
-test('completeChatProxy rejects streaming inbound requests', async () => {
+test('completeChatProxy returns upstream Web stream for Ollama when stream is true', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = async (url, init) => {
+    assert.match(String(url), /\/api\/chat$/);
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.stream, true);
+    const line = JSON.stringify({ message: { content: 'x' }, done: false });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`${line}\n`));
+        controller.close();
+      }
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'application/x-ndjson' }
+    });
+  };
+
   const rag = makeRagService();
   rag.getSettings = () => ({
     llmPassthroughEnabled: true,
-    llmPassthroughBaseUrl: 'http://127.0.0.1:1',
+    llmPassthroughBaseUrl: 'http://127.0.0.1:9',
     llmPassthroughModel: 'm',
     retrievalTopK: 10,
     llmPassthroughSearchAlgorithm: 'hybrid'
   });
-  await assert.rejects(
-    () =>
-      completeChatProxy(rag, {
-        stream: true,
-        messages: [{ role: 'user', content: 'x' }],
-        froggy: { rag: false }
-      }),
-    (e) => e.code === 'STREAM_NOT_SUPPORTED' && /Streaming is not supported/.test(String(e.message))
-  );
+
+  const out = await completeChatProxy(rag, {
+    stream: true,
+    messages: [{ role: 'user', content: 'x' }],
+    froggy: { rag: false }
+  });
+
+  assert.equal(out.streaming, true);
+  assert.ok(out.upstreamWebStream);
+  const reader = out.upstreamWebStream.getReader();
+  const chunks = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value).toString('utf8'));
+  }
+  assert.match(chunks.join(''), /"content":"x"/);
+});
+
+test('completeChatProxy returns upstream Web stream for OpenAI when stream is true', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = async (url, init) => {
+    assert.match(String(url), /\/chat\/completions$/);
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.stream, true);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+        );
+        controller.close();
+      }
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' }
+    });
+  };
+
+  const rag = makeRagService();
+  rag.getSettings = () => ({
+    llmPassthroughEnabled: true,
+    llmPassthroughProvider: 'openai',
+    llmPassthroughOpenAiBaseUrl: 'https://api.example/v1',
+    llmPassthroughOpenAiModel: 'gpt',
+    llmPassthroughOpenAiApiKey: 'sk-xyz',
+    retrievalTopK: 10,
+    llmPassthroughSearchAlgorithm: 'hybrid'
+  });
+
+  const out = await completeChatProxy(rag, {
+    stream: true,
+    messages: [{ role: 'user', content: 'q' }],
+    froggy: { rag: false }
+  });
+
+  assert.equal(out.streaming, true);
+  const reader = out.upstreamWebStream.getReader();
+  const chunks = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value).toString('utf8'));
+  }
+  assert.match(chunks.join(''), /delta/);
 });
 
 test('completeChatProxy forwards to Ollama upstream when froggy.rag is false', async (t) => {
@@ -457,6 +539,7 @@ test('completeChatProxy forwards to Ollama upstream when froggy.rag is false', a
     froggy: { rag: false }
   });
 
+  assert.equal(out.streaming, false);
   assert.equal(out.upstreamJson.message.content, 'upstream says hi');
   assert.equal(out.contextBlock, '');
   assert.deepEqual(out.errors, []);
@@ -493,5 +576,6 @@ test('completeChatProxy sends Bearer token for OpenAI-style upstream', async (t)
     froggy: { rag: false }
   });
 
+  assert.equal(out.streaming, false);
   assert.equal(out.upstreamJson.choices[0].message.content, 'ai');
 });

@@ -566,6 +566,23 @@ function resolveFroggyConfig(ragService, settings, inboundBody, options, default
  * @param {number} timeoutMs
  * @param {AbortSignal} [abortSignal] When aborted, the request is cancelled (in addition to timeout).
  */
+function parseUpstreamErrorPayload(text, status) {
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+  let msg = `HTTP ${status}`;
+  if (data && typeof data === 'object') {
+    const err = data.error;
+    if (typeof err === 'string') msg = err;
+    else if (err && typeof err === 'object' && err.message) msg = String(err.message);
+    else if (data.message) msg = String(data.message);
+  }
+  return msg;
+}
+
 async function postJson(url, body, headers, timeoutMs, abortSignal) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -599,14 +616,7 @@ async function postJson(url, body, headers, timeoutMs, abortSignal) {
       data = { raw: text };
     }
     if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      if (data && typeof data === 'object') {
-        const err = data.error;
-        if (typeof err === 'string') msg = err;
-        else if (err && typeof err === 'object' && err.message) msg = String(err.message);
-        else if (data.message) msg = String(data.message);
-      }
-      throw new Error(msg);
+      throw new Error(parseUpstreamErrorPayload(text, res.status));
     }
     return data;
   } finally {
@@ -614,6 +624,76 @@ async function postJson(url, body, headers, timeoutMs, abortSignal) {
     if (abortSignal) {
       abortSignal.removeEventListener('abort', onExternalAbort);
     }
+  }
+}
+
+/**
+ * POST JSON; returns the upstream response body as a Web ReadableStream on success.
+ * The connection-phase timeout is cleared once headers arrive so long streams are not cut off.
+ * @returns {Promise<{ contentType?: string, body: import('stream/web').ReadableStream }>}
+ */
+async function postJsonStream(url, body, headers, timeoutMs, abortSignal) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => {
+    controller.abort();
+  };
+  if (abortSignal) {
+    if (abortSignal.aborted) {
+      clearTimeout(t);
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    abortSignal.addEventListener('abort', onExternalAbort);
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    clearTimeout(t);
+    if (abortSignal) {
+      abortSignal.removeEventListener('abort', onExternalAbort);
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(parseUpstreamErrorPayload(text, res.status));
+    }
+    if (!res.body) {
+      throw new Error('Upstream returned no response body for streaming.');
+    }
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        await res.body.cancel();
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      abortSignal.addEventListener(
+        'abort',
+        () => {
+          res.body.cancel().catch(() => {});
+        },
+        { once: true }
+      );
+    }
+    return {
+      contentType: res.headers.get('content-type') || undefined,
+      body: res.body
+    };
+  } catch (e) {
+    clearTimeout(t);
+    if (abortSignal) {
+      abortSignal.removeEventListener('abort', onExternalAbort);
+    }
+    throw e;
   }
 }
 
@@ -821,11 +901,15 @@ function injectRagIntoMessages(messages, contextForModel, options = {}) {
 }
 
 /**
- * Full non-streaming proxy: RAG over last user turn, then forward to configured upstream. Returns upstream JSON and metadata.
+ * RAG over last user turn, then forward to configured upstream. Non-streaming returns upstream JSON;
+ * when `inboundBody.stream === true`, returns the upstream byte stream (Ollama NDJSON or OpenAI SSE).
  * @param {*} ragService
  * @param {{ messages?: unknown[], model?: string, temperature?: number, max_tokens?: number, stream?: boolean }} inboundBody
  * @param {{ namespace?: string, topK?: number, algorithm?: string, abortSignal?: AbortSignal }} [options]
- * @returns {Promise<{ upstreamJson: object, contextBlock: string, warnings: string[], errors: string[], scope?: object }>}
+ * @returns {Promise<
+ *   | { streaming: false, upstreamJson: object, contextBlock: string, warnings: string[], errors: string[], scope?: object }
+ *   | { streaming: true, upstreamWebStream: import('stream/web').ReadableStream, upstreamContentType?: string, contextBlock: string, warnings: string[], errors: string[], scope?: object }
+ * >}
  */
 async function completeChatProxy(ragService, inboundBody, options = {}) {
   const settings = ragService.getSettings();
@@ -846,13 +930,7 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     throw new Error('LLM Passthrough model name is required.');
   }
 
-  if (inboundBody && inboundBody.stream === true) {
-    const e = new Error(
-      'Streaming is not supported on the inbound passthrough listener. Set stream to false.'
-    );
-    e.code = 'STREAM_NOT_SUPPORTED';
-    throw e;
-  }
+  const wantStream = inboundBody && inboundBody.stream === true;
 
   const rawMessages = inboundBody && inboundBody.messages;
   const messages = normalizeChatMessages(rawMessages);
@@ -920,6 +998,69 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
       ? inboundBody.model.trim()
       : defaultModel;
 
+  if (wantStream) {
+    if (outbound === 'ollama') {
+      const url = `${baseUrl}/api/chat`;
+      const body = stripFroggySections({
+        model,
+        messages: augmented,
+        stream: true
+      });
+      if (inboundBody && inboundBody.options && typeof inboundBody.options === 'object') {
+        body.options = stripFroggySections(inboundBody.options);
+      }
+      const { body: upstreamWebStream, contentType } = await postJsonStream(
+        url,
+        body,
+        {},
+        timeoutMs,
+        upstreamAbortSignal
+      );
+      return {
+        streaming: true,
+        upstreamWebStream,
+        upstreamContentType: contentType || 'application/x-ndjson',
+        contextBlock,
+        warnings,
+        errors,
+        scope
+      };
+    }
+    const url = `${baseUrl}/chat/completions`;
+    const headers = {};
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    const body = stripFroggySections({
+      model,
+      messages: augmented,
+      stream: true,
+      temperature:
+        typeof inboundBody.temperature === 'number' && Number.isFinite(inboundBody.temperature)
+          ? inboundBody.temperature
+          : 0.7
+    });
+    if (typeof inboundBody.max_tokens === 'number' && Number.isFinite(inboundBody.max_tokens)) {
+      body.max_tokens = inboundBody.max_tokens;
+    }
+    const { body: upstreamWebStream, contentType } = await postJsonStream(
+      url,
+      body,
+      headers,
+      timeoutMs,
+      upstreamAbortSignal
+    );
+    return {
+      streaming: true,
+      upstreamWebStream,
+      upstreamContentType: contentType || 'text/event-stream; charset=utf-8',
+      contextBlock,
+      warnings,
+      errors,
+      scope
+    };
+  }
+
   let upstreamJson;
   if (outbound === 'ollama') {
     const url = `${baseUrl}/api/chat`;
@@ -953,7 +1094,7 @@ async function completeChatProxy(ragService, inboundBody, options = {}) {
     upstreamJson = await postJson(url, body, headers, timeoutMs, upstreamAbortSignal);
   }
 
-  return { upstreamJson, contextBlock, warnings, errors, scope };
+  return { streaming: false, upstreamJson, contextBlock, warnings, errors, scope };
 }
 
 /**

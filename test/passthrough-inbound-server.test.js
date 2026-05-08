@@ -63,6 +63,38 @@ function requestJson(port, path, { method = 'GET', body = null, headers = {} } =
   });
 }
 
+function requestRaw(port, path, { method = 'GET', body = null, headers = {} } = {}) {
+  const payload = body != null ? JSON.stringify(body) : '';
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method,
+        headers: {
+          ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+          ...headers
+        }
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode,
+            raw: Buffer.concat(chunks).toString('utf8'),
+            contentType: res.headers['content-type']
+          });
+        });
+      }
+    );
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
 function makeRagService(overrides = {}) {
   return {
     dataDir: paths.getDataDirForNamespace('general'),
@@ -212,6 +244,102 @@ test('PassthroughInboundService POST /v1/chat/completions returns upstream JSON'
 
   assert.equal(status, 200);
   assert.equal(body.choices[0].message.content, 'openai-body');
+});
+
+test('PassthroughInboundService POST /api/chat streams NDJSON when stream is true', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = async (url, init) => {
+    assert.equal(JSON.parse(String(init.body)).stream, true);
+    const line = JSON.stringify({ message: { content: 'tok' }, done: false });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`${line}\n`));
+        controller.close();
+      }
+    });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } });
+  };
+
+  const port = await getFreePort();
+  const rag = makeRagService({ ollamaPort: port });
+  const svc = new PassthroughInboundService(rag);
+  await svc.syncFromSettings();
+
+  t.after(async () => {
+    await svc.stopAll();
+  });
+
+  const { status, raw, contentType } = await requestRaw(port, '/api/chat', {
+    method: 'POST',
+    body: {
+      model: 'stub',
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+      froggy: { rag: false }
+    }
+  });
+
+  assert.equal(status, 200);
+  assert.match(String(contentType || ''), /ndjson|application\/x-ndjson/i);
+  assert.match(raw, /"content":"tok"/);
+});
+
+test('PassthroughInboundService POST /v1/chat/completions streams SSE when stream is true', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = async (url, init) => {
+    assert.equal(JSON.parse(String(init.body)).stream, true);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('data: {"choices":[{"delta":{"content":"a"}}]}\n\n')
+        );
+        controller.close();
+      }
+    });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+
+  const port = await getFreePort();
+  const rag = makeRagService({
+    ollamaPort: 0,
+    openAiPort: port,
+    settingsExtra: {
+      llmPassthroughProvider: 'openai',
+      llmPassthroughOpenAiBaseUrl: 'https://example.invalid/v1',
+      llmPassthroughOpenAiModel: 'gpt',
+      passthroughOllamaListenEnabled: false,
+      passthroughOpenAiListenEnabled: true,
+      passthroughOpenAiListenPort: port
+    }
+  });
+  const svc = new PassthroughInboundService(rag);
+  await svc.syncFromSettings();
+
+  t.after(async () => {
+    await svc.stopAll();
+  });
+
+  const { status, raw, contentType } = await requestRaw(port, '/v1/chat/completions', {
+    method: 'POST',
+    body: {
+      model: 'gpt',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+      froggy: { rag: false }
+    }
+  });
+
+  assert.equal(status, 200);
+  assert.match(String(contentType || ''), /event-stream/);
+  assert.match(raw, /delta/);
 });
 
 test('PassthroughInboundService OPTIONS returns 204 (CORS preflight)', async (t) => {

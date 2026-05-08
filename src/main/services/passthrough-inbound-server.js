@@ -1,9 +1,10 @@
 /**
  * Optional HTTP listeners that mimic Ollama (/api/chat) and OpenAI (/v1/chat/completions),
- * apply RAG, and forward non-streaming requests to the configured LLM Passthrough upstream.
+ * apply RAG, and forward requests to the configured LLM Passthrough upstream (JSON or streaming).
  */
 
 const express = require('express');
+const { Readable } = require('stream');
 const { completeChatProxy, getActiveLlmPassthroughUpstream } = require('./llm-passthrough');
 const { attachHttpRequestLogger } = require('./http-request-log');
 
@@ -24,6 +25,36 @@ function openAiError(res, status, message) {
       code: null
     }
   });
+}
+
+/**
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('stream/web').ReadableStream} webStream
+ * @param {{ contentType?: string }} [opts]
+ */
+function pipeUpstreamWebStreamToResponse(req, res, webStream, opts = {}) {
+  const contentType = opts.contentType || '';
+  res.status(200);
+  if (contentType) {
+    res.setHeader('Content-Type', contentType);
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const nodeStream = Readable.fromWeb(webStream);
+  nodeStream.on('error', (err) => {
+    if (!res.headersSent) {
+      res.status(502).json({ error: err.message });
+    } else if (!res.writableEnded) {
+      res.destroy(err);
+    }
+  });
+  req.on('close', () => {
+    if (!res.writableEnded) {
+      nodeStream.destroy();
+    }
+  });
+  nodeStream.pipe(res);
 }
 
 function applyPermissiveCors(app) {
@@ -83,21 +114,39 @@ class PassthroughInboundService {
 
     app.post('/api/chat', async (req, res) => {
       const ns = readNamespaceFromReq(req);
+      const abortController = new AbortController();
+      const onClientAbort = () => abortController.abort();
+      req.on('aborted', onClientAbort);
+      let streamed = false;
       try {
         const out = await completeChatProxy(this.ragService, req.body || {}, {
-          namespace: ns
+          namespace: ns,
+          abortSignal: abortController.signal
         });
+        if (out.streaming && out.upstreamWebStream) {
+          streamed = true;
+          pipeUpstreamWebStreamToResponse(req, res, out.upstreamWebStream, {
+            contentType: out.upstreamContentType
+          });
+          const detachAbort = () => {
+            req.removeListener('aborted', onClientAbort);
+          };
+          res.once('finish', detachAbort);
+          res.once('close', detachAbort);
+          return;
+        }
         res.json(out.upstreamJson);
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        if (e && e.code === 'STREAM_NOT_SUPPORTED') {
-          return res.status(400).json({ error: msg });
-        }
         if (msg.includes('LLM Passthrough is disabled') || msg.includes('base URL') || msg.includes('model name')) {
           return res.status(503).json({ error: msg });
         }
         this.log('error', 'Inbound Ollama /api/chat error', { error: msg });
         res.status(400).json({ error: msg });
+      } finally {
+        if (!streamed) {
+          req.removeListener('aborted', onClientAbort);
+        }
       }
     });
 
@@ -136,21 +185,39 @@ class PassthroughInboundService {
 
     app.post('/v1/chat/completions', async (req, res) => {
       const ns = readNamespaceFromReq(req);
+      const abortController = new AbortController();
+      const onClientAbort = () => abortController.abort();
+      req.on('aborted', onClientAbort);
+      let streamed = false;
       try {
         const out = await completeChatProxy(this.ragService, req.body || {}, {
-          namespace: ns
+          namespace: ns,
+          abortSignal: abortController.signal
         });
+        if (out.streaming && out.upstreamWebStream) {
+          streamed = true;
+          pipeUpstreamWebStreamToResponse(req, res, out.upstreamWebStream, {
+            contentType: out.upstreamContentType
+          });
+          const detachAbort = () => {
+            req.removeListener('aborted', onClientAbort);
+          };
+          res.once('finish', detachAbort);
+          res.once('close', detachAbort);
+          return;
+        }
         res.json(out.upstreamJson);
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        if (e && e.code === 'STREAM_NOT_SUPPORTED') {
-          return openAiError(res, 400, msg);
-        }
         if (msg.includes('LLM Passthrough is disabled') || msg.includes('base URL') || msg.includes('model name')) {
           return openAiError(res, 503, msg);
         }
         this.log('error', 'Inbound OpenAI /v1/chat/completions error', { error: msg });
         return openAiError(res, 400, msg);
+      } finally {
+        if (!streamed) {
+          req.removeListener('aborted', onClientAbort);
+        }
       }
     });
 
